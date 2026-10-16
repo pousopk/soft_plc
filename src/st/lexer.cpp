@@ -12,6 +12,7 @@ const char* tokenKindName(TokenKind kind) {
     case TokenKind::Identifier: return "identifier";
     case TokenKind::Integer: return "integer";
     case TokenKind::Real: return "real number";
+    case TokenKind::Time: return "TIME literal";
     case TokenKind::DirectAddress: return "address";
     case TokenKind::True: return "'TRUE'";
     case TokenKind::False: return "'FALSE'";
@@ -20,6 +21,7 @@ const char* tokenKindName(TokenKind kind) {
     case TokenKind::Colon: return "':'";
     case TokenKind::Comma: return "','";
     case TokenKind::DotDot: return "'..'";
+    case TokenKind::Dot: return "'.'";
     case TokenKind::LeftParen: return "'('";
     case TokenKind::RightParen: return "')'";
     case TokenKind::Plus: return "'+'";
@@ -40,7 +42,11 @@ const char* tokenKindName(TokenKind kind) {
     case TokenKind::GreaterEqual: return "'>='";
     case TokenKind::Program: return "'PROGRAM'";
     case TokenKind::EndProgram: return "'END_PROGRAM'";
+    case TokenKind::FunctionBlock: return "'FUNCTION_BLOCK'";
+    case TokenKind::EndFunctionBlock: return "'END_FUNCTION_BLOCK'";
     case TokenKind::Var: return "'VAR'";
+    case TokenKind::VarInput: return "'VAR_INPUT'";
+    case TokenKind::VarOutput: return "'VAR_OUTPUT'";
     case TokenKind::EndVar: return "'END_VAR'";
     case TokenKind::At: return "'AT'";
     case TokenKind::If: return "'IF'";
@@ -78,6 +84,8 @@ constexpr std::pair<std::string_view, TokenKind> keywords[] = {
     {"NOT", TokenKind::Not},         {"PROGRAM", TokenKind::Program},
     {"END_PROGRAM", TokenKind::EndProgram}, {"VAR", TokenKind::Var},
     {"END_VAR", TokenKind::EndVar},  {"AT", TokenKind::At},
+    {"VAR_INPUT", TokenKind::VarInput}, {"VAR_OUTPUT", TokenKind::VarOutput},
+    {"FUNCTION_BLOCK", TokenKind::FunctionBlock}, {"END_FUNCTION_BLOCK", TokenKind::EndFunctionBlock},
     {"IF", TokenKind::If},           {"THEN", TokenKind::Then},
     {"ELSIF", TokenKind::Elsif},     {"ELSE", TokenKind::Else},
     {"END_IF", TokenKind::EndIf},    {"CASE", TokenKind::Case},
@@ -194,6 +202,10 @@ private:
         std::string text(source_.substr(begin, pos_ - begin));
 
         const auto upper = toUpper(text);
+        if ((upper == "T" || upper == "TIME") && peek() == '#') {
+            return timeLiteral(start, begin);
+        }
+
         auto kind = TokenKind::Identifier;
         for (const auto& [keyword, keywordKind] : keywords) {
             if (upper == keyword) {
@@ -202,6 +214,45 @@ private:
             }
         }
         return Token{kind, std::move(text), start, {}};
+    }
+
+    // T#1h2m3s4ms or TIME#500ms: one or more <number><unit> parts, with units
+    // d, h, m, s and ms (any case, largest first). The value is in milliseconds.
+    Token timeLiteral(SourceLocation start, std::size_t begin) {
+        advance(); // '#'
+        std::int64_t total = 0;
+        bool anyPart = false;
+        while (isDigit(peek())) {
+            const auto numberBegin = pos_;
+            readDigits(10);
+            const auto digits = withoutUnderscores(source_.substr(numberBegin, pos_ - numberBegin));
+            std::int64_t amount = 0;
+            std::from_chars(digits.data(), digits.data() + digits.size(), amount);
+
+            const auto unitBegin = pos_;
+            while (std::isalpha(static_cast<unsigned char>(peek())) != 0) {
+                advance();
+            }
+            const auto unit = toUpper(source_.substr(unitBegin, pos_ - unitBegin));
+            std::int64_t millisecondsPerUnit = 0;
+            if (unit == "D") millisecondsPerUnit = 86'400'000;
+            else if (unit == "H") millisecondsPerUnit = 3'600'000;
+            else if (unit == "M") millisecondsPerUnit = 60'000;
+            else if (unit == "S") millisecondsPerUnit = 1'000;
+            else if (unit == "MS") millisecondsPerUnit = 1;
+            else {
+                fail(start, fmt::format("unknown TIME unit '{}' (use d, h, m, s or ms)",
+                                        source_.substr(unitBegin, pos_ - unitBegin)));
+            }
+            total += amount * millisecondsPerUnit;
+            anyPart = true;
+        }
+
+        std::string text(source_.substr(begin, pos_ - begin));
+        if (!anyPart || isIdentifierChar(peek()) || peek() == '.') {
+            fail(start, fmt::format("invalid TIME literal '{}' (examples: T#500ms, T#1m30s)", text));
+        }
+        return Token{TokenKind::Time, std::move(text), start, total};
     }
 
     // %IX0.0, %QB1, %MW10 ... validated with the same parser as the rest of the PLC.
@@ -329,7 +380,7 @@ private:
                 advance();
                 return make(TokenKind::DotDot, "..");
             }
-            fail(start, "unexpected '.'");
+            return make(TokenKind::Dot, ".");
         case '(': return make(TokenKind::LeftParen, "(");
         case ')': return make(TokenKind::RightParen, ")");
         case '+': return make(TokenKind::Plus, "+");

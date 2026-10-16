@@ -15,6 +15,19 @@ std::string formatReal(double value) {
     return text;
 }
 
+std::string formatLiteral(const Literal& literal) {
+    return literal.isTime ? formatTime(std::get<std::int64_t>(literal.value)) : formatValue(literal.value);
+}
+
+const char* sectionName(VarSection section) {
+    switch (section) {
+    case VarSection::Local: return "Var";
+    case VarSection::Input: return "VarInput";
+    case VarSection::Output: return "VarOutput";
+    }
+    return "Var";
+}
+
 // Appends lines to a string, indented two spaces per level.
 class TreeWriter {
 public:
@@ -29,12 +42,16 @@ public:
     void expression(const Expression& expression, int depth) {
         std::visit(Overloaded{
                        [&](const Literal& literal) {
-                           const char* kind = std::holds_alternative<bool>(literal.value)           ? "Bool"
-                                              : std::holds_alternative<std::int64_t>(literal.value) ? "Integer"
-                                                                                                    : "Real";
-                           line(depth, fmt::format("{} {}", kind, formatValue(literal.value)));
+                           const char* kind = literal.isTime                                    ? "Time"
+                                              : std::holds_alternative<bool>(literal.value)     ? "Bool"
+                                              : std::holds_alternative<double>(literal.value)   ? "Real"
+                                                                                                : "Integer";
+                           line(depth, fmt::format("{} {}", kind, formatLiteral(literal)));
                        },
                        [&](const VariableRef& variable) { line(depth, fmt::format("Variable {}", variable.name)); },
+                       [&](const MemberRef& member) {
+                           line(depth, fmt::format("Member {}.{}", member.instance, member.member));
+                       },
                        [&](const UnaryExpression& unary) {
                            line(depth, fmt::format("Unary {}", operatorSymbol(unary.op)));
                            this->expression(*unary.operand, depth + 1);
@@ -55,12 +72,12 @@ public:
     }
 
     // A labelled child: the label on one line, its content indented below.
-    void labelled(int depth, const char* label, const Expression& child) {
+    void labelled(int depth, const std::string& label, const Expression& child) {
         line(depth, label);
         expression(child, depth + 1);
     }
 
-    void labelled(int depth, const char* label, const StatementList& body) {
+    void labelled(int depth, const std::string& label, const StatementList& body) {
         line(depth, label);
         statements(body, depth + 1);
     }
@@ -93,7 +110,7 @@ public:
                                    labels += range.low == range.high ? fmt::format("{}", range.low)
                                                                      : fmt::format("{}..{}", range.low, range.high);
                                }
-                               labelled(depth + 1, fmt::format("Labels {}", labels).c_str(), branch.body);
+                               labelled(depth + 1, "Labels " + labels, branch.body);
                            }
                            if (!s.elseBody.empty()) {
                                labelled(depth + 1, "Else", s.elseBody);
@@ -120,11 +137,48 @@ public:
                        },
                        [&](const ExitStatement&) { line(depth, "Exit"); },
                        [&](const ReturnStatement&) { line(depth, "Return"); },
+                       [&](const CallStatement& s) {
+                           line(depth, fmt::format("Call {}", s.instance));
+                           for (const auto& argument : s.arguments) {
+                               labelled(depth + 1, "Argument " + argument.name, *argument.value);
+                           }
+                       },
                    },
                    statement.node);
     }
 
+    void pou(const Pou& pou) {
+        line(0, fmt::format("{} {}", pou.kind == PouKind::Program ? "Program" : "FunctionBlock", pou.name));
+        for (const auto section : {VarSection::Input, VarSection::Output, VarSection::Local}) {
+            bool headerWritten = false;
+            for (const auto& variable : pou.variables) {
+                if (variable.section != section) {
+                    continue;
+                }
+                if (!headerWritten) {
+                    line(1, sectionName(section));
+                    headerWritten = true;
+                }
+                line(2, declaration(variable));
+            }
+        }
+        labelled(1, "Body", pou.body);
+    }
+
 private:
+    static std::string declaration(const VariableDeclaration& variable) {
+        std::string text = variable.name;
+        if (variable.address) {
+            text += " AT " + variable.address->toString();
+        }
+        text += " : ";
+        text += variable.type == DataType::FunctionBlock ? variable.typeName : dataTypeName(variable.type);
+        if (variable.initialValue) {
+            text += " := " + formatExpression(*variable.initialValue);
+        }
+        return text;
+    }
+
     std::string& out_;
 };
 
@@ -137,7 +191,9 @@ const char* dataTypeName(DataType type) {
     case DataType::Int: return "INT";
     case DataType::DInt: return "DINT";
     case DataType::Real: return "REAL";
+    case DataType::Time: return "TIME";
     case DataType::AnyInt: return "integer literal";
+    case DataType::FunctionBlock: return "function block";
     }
     return "unknown";
 }
@@ -149,6 +205,31 @@ std::string formatValue(const Value& value) {
                           [](double d) { return formatReal(d); },
                       },
                       value);
+}
+
+std::string formatValue(const Value& value, DataType type) {
+    if (type == DataType::Time) {
+        return formatTime(std::get<std::int64_t>(value));
+    }
+    return formatValue(value);
+}
+
+std::string formatTime(std::int64_t milliseconds) {
+    if (milliseconds == 0) {
+        return "T#0ms";
+    }
+    std::string text = milliseconds < 0 ? "T#-" : "T#";
+    auto rest = milliseconds < 0 ? -milliseconds : milliseconds;
+    constexpr std::pair<std::int64_t, const char*> units[] = {
+        {86'400'000, "d"}, {3'600'000, "h"}, {60'000, "m"}, {1'000, "s"}, {1, "ms"},
+    };
+    for (const auto& [size, unit] : units) {
+        if (rest >= size) {
+            text += fmt::format("{}{}", rest / size, unit);
+            rest %= size;
+        }
+    }
+    return text;
 }
 
 const char* operatorSymbol(UnaryOperator op) {
@@ -181,26 +262,28 @@ const char* operatorSymbol(BinaryOperator op) {
 }
 
 ExpressionPtr cloneExpression(const Expression& expression) {
-    auto node = std::visit(
-        Overloaded{
-            [](const Literal& literal) -> decltype(Expression::node) { return literal; },
-            [](const VariableRef& variable) -> decltype(Expression::node) { return variable; },
-            [](const UnaryExpression& unary) -> decltype(Expression::node) {
-                return UnaryExpression{unary.op, cloneExpression(*unary.operand)};
-            },
-            [](const BinaryExpression& binary) -> decltype(Expression::node) {
-                return BinaryExpression{binary.op, cloneExpression(*binary.left), cloneExpression(*binary.right),
-                                        binary.operandType};
-            },
-        },
-        expression.node);
+    using Node = decltype(Expression::node);
+    auto node = std::visit(Overloaded{
+                               [](const Literal& literal) -> Node { return literal; },
+                               [](const VariableRef& variable) -> Node { return variable; },
+                               [](const MemberRef& member) -> Node { return member; },
+                               [](const UnaryExpression& unary) -> Node {
+                                   return UnaryExpression{unary.op, cloneExpression(*unary.operand)};
+                               },
+                               [](const BinaryExpression& binary) -> Node {
+                                   return BinaryExpression{binary.op, cloneExpression(*binary.left),
+                                                           cloneExpression(*binary.right), binary.operandType};
+                               },
+                           },
+                           expression.node);
     return std::make_unique<Expression>(Expression{std::move(node), expression.location, expression.type});
 }
 
 std::string formatExpression(const Expression& expression) {
     return std::visit(Overloaded{
-                          [](const Literal& literal) { return formatValue(literal.value); },
+                          [](const Literal& literal) { return formatLiteral(literal); },
                           [](const VariableRef& variable) { return variable.name; },
+                          [](const MemberRef& member) { return member.instance + "." + member.member; },
                           [](const UnaryExpression& unary) {
                               const char* separator = unary.op == UnaryOperator::Not ? " " : "";
                               return fmt::format("({}{}{})", operatorSymbol(unary.op), separator,
@@ -220,23 +303,19 @@ std::string dumpTree(const Statement& statement) {
     return out;
 }
 
-std::string dumpTree(const ProgramUnit& program) {
+std::string dumpTree(const Pou& pou) {
     std::string out;
-    TreeWriter writer(out);
-    writer.line(0, fmt::format("Program {}", program.name));
-    writer.line(1, "Variables");
-    for (const auto& variable : program.variables) {
-        std::string text = variable.name;
-        if (variable.address) {
-            text += " AT " + variable.address->toString();
-        }
-        text += fmt::format(" : {}", dataTypeName(variable.type));
-        if (variable.initialValue) {
-            text += " := " + formatExpression(*variable.initialValue);
-        }
-        writer.line(2, text);
+    TreeWriter(out).pou(pou);
+    return out;
+}
+
+std::string dumpTree(const CompilationUnit& unit) {
+    std::string out;
+    for (const auto& functionBlock : unit.functionBlocks) {
+        out += dumpTree(functionBlock);
+        out += '\n';
     }
-    writer.labelled(1, "Body", program.body);
+    out += dumpTree(unit.program);
     return out;
 }
 

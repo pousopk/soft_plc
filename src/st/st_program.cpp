@@ -3,15 +3,15 @@
 
 namespace softplc::st {
 
-StProgram::StProgram(ProgramUnit program, StopHandler onStop, std::uint64_t loopLimit)
-    : interpreter_(std::move(program), loopLimit), onStop_(std::move(onStop)) {}
+StProgram::StProgram(CompilationUnit unit, StopHandler onStop, std::uint64_t loopLimit)
+    : interpreter_(std::move(unit), loopLimit), onStop_(std::move(onStop)) {}
 
-void StProgram::execute(ProcessImage& image, const CycleContext& /*context*/) {
+void StProgram::execute(ProcessImage& image, const CycleContext& context) {
     if (stopped()) {
         return;
     }
     try {
-        interpreter_.runCycle(image);
+        interpreter_.runCycle(image, context.now);
     } catch (const RuntimeError& error) {
         stopError_ = error;
         const auto outputs = image.bytes(Area::Output);

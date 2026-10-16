@@ -68,7 +68,8 @@ add_library(soft_plc_core STATIC
   src/core/address.cpp
   src/core/process_image.cpp
   src/core/scan_cycle.cpp
-  src/stdlib/ton.cpp
+  src/stdlib/timers.cpp
+  src/stdlib/counters.cpp
   src/st/diagnostic.cpp
   src/st/lexer.cpp
   src/st/ast.cpp
@@ -76,6 +77,7 @@ add_library(soft_plc_core STATIC
   src/st/analyzer.cpp
   src/st/interpreter.cpp
   src/st/st_program.cpp
+  src/st/builtins.cpp
 )
 target_include_directories(soft_plc_core PUBLIC src)
 target_link_libraries(soft_plc_core

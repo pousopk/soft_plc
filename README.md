@@ -19,7 +19,8 @@ ctest --test-dir build --output-on-failure
 
 ./build/soft_plc                              # built-in C++ blink demo; Ctrl+C to stop
 ./build/soft_plc examples/traffic_light.st    # run a Structured Text program
-./build/st_parse examples/traffic_light.st    # show how a program is parsed (and check it)
+./build/soft_plc examples/function_blocks.st  # function blocks, timers and counters
+./build/st_parse examples/function_blocks.st  # show how a program is parsed (and check it)
 ./build/st_parse -e "a := b + 3 * c;"
 ```
 
@@ -30,18 +31,20 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 ## Structured Text supported so far
 
 - `PROGRAM … END_PROGRAM` with `VAR … END_VAR` blocks
-- Types `BOOL`, `INT`, `DINT`, `REAL`; initial values (`count : INT := 5;`); `AT %QX0.0` to place a variable in the process image
+- `FUNCTION_BLOCK … END_FUNCTION_BLOCK` with `VAR_INPUT`, `VAR_OUTPUT` and `VAR`; instances (`t1 : TON;`), calls (`t1(IN := x, PT := T#2s);`) and outputs (`t1.Q`)
+- Standard blocks: `TON`, `TOF`, `TP`, `CTU`, `CTD`, `R_TRIG`, `F_TRIG`, `SR`, `RS`
+- Types `BOOL`, `INT`, `DINT`, `REAL`, `TIME`; initial values (`count : INT := 5;`); `AT %QX0.0` to place a variable in the process image
 - Statements: `:=`, `IF/ELSIF/ELSE`, `CASE` (lists and ranges), `FOR … BY`, `WHILE`, `REPEAT … UNTIL`, `EXIT`, `RETURN`
 - Operators: `+ - * / MOD **`, `= <> < <= > >=`, `AND & OR XOR NOT`
-- Literals: `42`, `1_000`, `16#FF`, `2#1010`, `3.14`, `1.5E3`, `TRUE`, `FALSE`; comments `(* … *)` and `//`
+- Literals: `42`, `1_000`, `16#FF`, `2#1010`, `3.14`, `1.5E3`, `TRUE`, `FALSE`, `T#1m30s`; comments `(* … *)` and `//`
 
 ## Layout
 
 | Path | Contents |
 |---|---|
 | `src/core/` | Addresses, process image, program and I/O interfaces, scan cycle |
-| `src/stdlib/` | Standard function blocks (TON so far) |
-| `src/st/` | Structured Text: lexer, syntax tree, parser, analyzer (type checks), interpreter |
+| `src/stdlib/` | Standard function blocks in C++: timers, counters, edges, flip-flops |
+| `src/st/` | Structured Text: lexer, syntax tree, parser, analyzer (type checks), interpreter, standard block bridge |
 | `src/demo/` | Demo program and console I/O driver used by `main.cpp` |
 | `src/util/` | Small general-purpose helpers |
 | `tools/` | Command-line tools (`st_parse`) |

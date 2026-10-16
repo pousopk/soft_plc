@@ -1,10 +1,10 @@
 // st_parse: shows how the parser understands Structured Text.
 //
-//   st_parse examples/traffic_light.st      a whole PROGRAM ... END_PROGRAM
+//   st_parse examples/traffic_light.st      a whole file: FUNCTION_BLOCKs and a PROGRAM
 //   st_parse examples/expressions.st        statements on their own
 //   st_parse -e "a := b + 3 * c;"
 //
-// For a PROGRAM it also runs the analyzer, so type errors are reported too.
+// For a whole file it also runs the analyzer, so type errors are reported too.
 #include "st/analyzer.hpp"
 #include "st/ast.hpp"
 #include "st/lexer.hpp"
@@ -26,9 +26,10 @@ int reportError(const softplc::st::Diagnostic& diagnostic, std::string_view sour
     return 1;
 }
 
-bool startsWithProgram(std::string_view source) {
+bool isWholeFile(std::string_view source) {
     const auto tokens = softplc::st::tokenize(source);
-    return tokens && tokens->front().kind == softplc::st::TokenKind::Program;
+    return tokens && (tokens->front().kind == softplc::st::TokenKind::Program ||
+                      tokens->front().kind == softplc::st::TokenKind::FunctionBlock);
 }
 
 } // namespace
@@ -48,7 +49,7 @@ int main(int argc, char** argv) {
         return usage();
     }
 
-    if (startsWithProgram(source)) {
+    if (isWholeFile(source)) {
         const auto program = softplc::st::compileProgram(source);
         if (!program) {
             return reportError(program.error(), source);

@@ -43,7 +43,7 @@ A word has two bytes. Siemens S7 stores the **most significant byte first** (big
 `runOnce()` does one cycle: read inputs → execute → write outputs, and measures how long that took. `run()` repeats it at a fixed rhythm. If a cycle takes longer than the cycle time, it's an **overrun**: it's counted, and the next cycle starts immediately.
 
 ### 1.5 The TON timer
-**Code:** `src/stdlib/ton.cpp`
+**Code:** `src/stdlib/timers.cpp`
 
 An on-delay timer: Q switches on once IN has been true for the preset time (PT). ET (elapsed time) counts up to PT. When IN goes false, everything resets.
 
@@ -150,7 +150,7 @@ Ctrl+C triggers a **signal handler**, which can interrupt the program at any mom
 `FakeIo` and `CopyProgram` are tiny implementations of the interfaces that record what happened (`"read"`, `"execute"`, `"write"`). The test then checks the order. This works only because `ScanCycle` depends on interfaces, not on concrete classes (2.1).
 
 ### 3.2 Controlling time in tests (dependency injection)
-**Code:** `tests/stdlib/ton_test.cpp`
+**Code:** `tests/stdlib/timers_test.cpp`
 
 `Ton::update()` receives `now` as a parameter instead of reading the clock itself. Tests can then pass made-up times (`t0 + 499ms`, `t0 + 500ms`):
 - **Fast:** no real waiting.

@@ -11,7 +11,10 @@ add_executable(soft_plc_tests
   core/address_test.cpp
   core/process_image_test.cpp
   core/scan_cycle_test.cpp
-  stdlib/ton_test.cpp
+  stdlib/timers_test.cpp
+  stdlib/counters_test.cpp
+  stdlib/edges_test.cpp
+  st/function_block_test.cpp
   st/lexer_test.cpp
   st/parser_test.cpp
   st/diagnostic_test.cpp

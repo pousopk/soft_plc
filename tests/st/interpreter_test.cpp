@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include "st/analyzer.hpp"
 #include "st/interpreter.hpp"
+#include <chrono>
 #include <cmath>
 #include <string>
 
@@ -20,9 +21,11 @@ public:
     explicit Runner(std::string_view source, std::uint64_t loopLimit = 1'000'000)
         : image_(8, 8, 32), interpreter_(compile(source), loopLimit) {}
 
+    // Runs `count` cycles, with the clock advancing 10 ms per cycle like the real scan cycle.
     Runner& cycles(int count) {
         for (int i = 0; i < count; ++i) {
-            interpreter_.runCycle(image_);
+            interpreter_.runCycle(image_, now_);
+            now_ += std::chrono::milliseconds(10);
         }
         return *this;
     }
@@ -34,7 +37,7 @@ public:
     ProcessImage& image() { return image_; }
 
 private:
-    static ProgramUnit compile(std::string_view source) {
+    static CompilationUnit compile(std::string_view source) {
         auto program = compileProgram(source);
         if (!program) {
             FAIL("compile error: " << program.error().message);
@@ -50,6 +53,7 @@ private:
 
     ProcessImage image_;
     Interpreter interpreter_;
+    TimePoint now_ = TimePoint{} + std::chrono::seconds(100);
 };
 
 // A program with one INT `r` (and helpers), running `body` once.

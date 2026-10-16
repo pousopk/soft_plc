@@ -1,10 +1,12 @@
 #include "st/analyzer.hpp"
+#include "st/builtins.hpp"
 #include "st/parser.hpp"
 #include "util/overloaded.hpp"
 #include "util/text.hpp"
 #include <algorithm>
 #include <fmt/format.h>
 #include <optional>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -32,7 +34,7 @@ DataType commonNumericType(DataType a, DataType b) {
 // The value of an integer literal, also when written with a minus: 5 or -5.
 std::optional<std::int64_t> integerConstant(const Expression& expression) {
     if (const auto* literal = std::get_if<Literal>(&expression.node)) {
-        if (const auto* value = std::get_if<std::int64_t>(&literal->value)) {
+        if (const auto* value = std::get_if<std::int64_t>(&literal->value); value && !literal->isTime) {
             return *value;
         }
     }
@@ -46,18 +48,28 @@ std::optional<std::int64_t> integerConstant(const Expression& expression) {
     return std::nullopt;
 }
 
+// Finds a variable of a POU by name (case-insensitive).
+std::optional<std::size_t> findVariable(const Pou& pou, const std::string& name) {
+    const auto upper = toUpper(name);
+    for (std::size_t slot = 0; slot < pou.variables.size(); ++slot) {
+        if (toUpper(pou.variables[slot].name) == upper) {
+            return slot;
+        }
+    }
+    return std::nullopt;
+}
+
 class Analyzer {
 public:
-    explicit Analyzer(ProgramUnit& program) : program_(program) {}
+    explicit Analyzer(CompilationUnit& unit) : unit_(unit) {}
 
     void run() {
-        declareVariables();
-        for (auto& variable : program_.variables) {
-            if (variable.initialValue) {
-                checkInitialValue(variable);
-            }
+        registerFunctionBlockTypes();
+        for (auto& functionBlock : unit_.functionBlocks) {
+            checkPou(functionBlock);
         }
-        checkStatements(program_.body);
+        checkPou(unit_.program);
+        checkNoFunctionBlockContainsItself();
     }
 
 private:
@@ -65,16 +77,88 @@ private:
         throw AnalysisError{Diagnostic{std::move(message), where}};
     }
 
-    // ------------------------------------------------------------ Variables
+    // ------------------------------------------------------------ Function block types
+
+    void registerFunctionBlockTypes() {
+        for (const auto& builtin : builtinFunctionBlocks()) {
+            types_.emplace(toUpper(builtin.name), &builtin);
+        }
+        for (const auto& functionBlock : unit_.functionBlocks) {
+            const auto [it, inserted] = types_.emplace(toUpper(functionBlock.name), &functionBlock);
+            if (!inserted) {
+                if (it->second->builtin) {
+                    fail(functionBlock.location,
+                         fmt::format("'{}' is a standard function block; choose another name", functionBlock.name));
+                }
+                fail(functionBlock.location, fmt::format("function block '{}' is already defined on line {}",
+                                                         functionBlock.name, it->second->location.line));
+            }
+        }
+    }
+
+    // A function block may contain instances of other blocks, but never of
+    // itself: an instance would contain an instance, which contains an instance...
+    void checkNoFunctionBlockContainsItself() const {
+        for (const auto& functionBlock : unit_.functionBlocks) {
+            std::vector<const Pou*> path{&functionBlock};
+            checkContents(functionBlock, path);
+        }
+    }
+
+    void checkContents(const Pou& pou, std::vector<const Pou*>& path) const {
+        for (const auto& variable : pou.variables) {
+            const Pou* inner = variable.functionBlock;
+            if (inner == nullptr || inner->builtin) {
+                continue;
+            }
+            if (std::find(path.begin(), path.end(), inner) != path.end()) {
+                std::string chain;
+                for (const Pou* step : path) {
+                    chain += step->name + " -> ";
+                }
+                fail(variable.location, fmt::format("function block '{}' contains itself: {}{}", inner->name, chain,
+                                                    inner->name));
+            }
+            path.push_back(inner);
+            checkContents(*inner, path);
+            path.pop_back();
+        }
+    }
+
+    // ------------------------------------------------------------ One POU
+
+    void checkPou(Pou& pou) {
+        pou_ = &pou;
+        slots_.clear();
+        loopVariables_.clear();
+        loopDepth_ = 0;
+
+        declareVariables();
+        for (auto& variable : pou.variables) {
+            if (variable.initialValue) {
+                checkInitialValue(variable);
+            }
+        }
+        checkStatements(pou.body);
+    }
+
+    bool inProgram() const { return pou_->kind == PouKind::Program; }
 
     void declareVariables() {
-        for (std::size_t slot = 0; slot < program_.variables.size(); ++slot) {
-            const auto& variable = program_.variables[slot];
+        for (std::size_t slot = 0; slot < pou_->variables.size(); ++slot) {
+            auto& variable = pou_->variables[slot];
             const auto [it, inserted] = slots_.emplace(toUpper(variable.name), slot);
             if (!inserted) {
-                const auto& first = program_.variables[it->second];
+                const auto& first = pou_->variables[it->second];
                 fail(variable.location,
                      fmt::format("'{}' is already declared on line {}", variable.name, first.location.line));
+            }
+            if (inProgram() && variable.section != VarSection::Local) {
+                fail(variable.location, "a PROGRAM can only have VAR blocks; VAR_INPUT and VAR_OUTPUT are for "
+                                        "function blocks");
+            }
+            if (variable.type == DataType::FunctionBlock) {
+                resolveFunctionBlockType(variable);
             }
             if (variable.address) {
                 checkAddress(variable);
@@ -82,18 +166,43 @@ private:
         }
     }
 
-    void checkAddress(const VariableDeclaration& variable) {
+    void resolveFunctionBlockType(VariableDeclaration& variable) const {
+        const auto it = types_.find(toUpper(variable.typeName));
+        if (it == types_.end()) {
+            fail(variable.location, fmt::format("unknown type '{}' (not BOOL, INT, DINT, REAL, TIME or a known "
+                                                "function block)",
+                                                variable.typeName));
+        }
+        variable.functionBlock = it->second;
+        if (variable.section != VarSection::Local) {
+            fail(variable.location, "inputs and outputs must be BOOL, INT, DINT, REAL or TIME, not function blocks");
+        }
+        if (variable.initialValue) {
+            fail(variable.location,
+                 fmt::format("'{}' is a {} instance and can't have an initial value", variable.name, it->second->name));
+        }
+    }
+
+    void checkAddress(const VariableDeclaration& variable) const {
+        if (!inProgram()) {
+            fail(variable.location, fmt::format("AT can only be used in the PROGRAM, not inside function block '{}'",
+                                                pou_->name));
+        }
         const auto size = variable.address->size;
         const bool fits = (variable.type == DataType::Bool && size == AccessSize::Bit) ||
                           (variable.type == DataType::Int && size == AccessSize::Word) ||
-                          (variable.type == DataType::DInt && size == AccessSize::DWord) ||
-                          (variable.type == DataType::Real && size == AccessSize::DWord);
+                          ((variable.type == DataType::DInt || variable.type == DataType::Real ||
+                            variable.type == DataType::Time) &&
+                           size == AccessSize::DWord);
         if (!fits) {
-            const char* needed = variable.type == DataType::Bool  ? "a bit address like %IX0.0"
-                                 : variable.type == DataType::Int ? "a word address like %MW0"
-                                                                  : "a double word address like %MD0";
-            fail(variable.location, fmt::format("{} '{}' needs {}, not {}", dataTypeName(variable.type), variable.name,
-                                                needed, variable.address->toString()));
+            const char* needed = variable.type == DataType::Bool           ? "a bit address like %IX0.0"
+                                 : variable.type == DataType::Int          ? "a word address like %MW0"
+                                 : variable.type == DataType::FunctionBlock ? "no address at all"
+                                                                            : "a double word address like %MD0";
+            const auto typeText =
+                variable.type == DataType::FunctionBlock ? variable.typeName : std::string(dataTypeName(variable.type));
+            fail(variable.location, fmt::format("{} '{}' needs {}, not {}", typeText, variable.name, needed,
+                                                variable.address->toString()));
         }
         if (variable.initialValue) {
             fail(variable.location, fmt::format("'{}' can't have an initial value: its value comes from {}",
@@ -116,6 +225,19 @@ private:
         return it->second;
     }
 
+    const VariableDeclaration& variableAt(std::size_t slot) const { return pou_->variables[slot]; }
+
+    // Looks up `instance` and checks that it's a function block instance.
+    std::pair<std::size_t, const Pou*> lookupInstance(const std::string& instance, SourceLocation where,
+                                                      const char* whatFor) const {
+        const auto slot = lookup(instance, where);
+        const auto& variable = variableAt(slot);
+        if (variable.type != DataType::FunctionBlock) {
+            fail(where, fmt::format("'{}' is not a function block instance, so it {}", instance, whatFor));
+        }
+        return {slot, variable.functionBlock};
+    }
+
     // Can a value of `value`'s type be stored in a variable of type `target`
     // without losing anything?
     void checkAssignable(DataType target, const Expression& value, const std::string& targetName) const {
@@ -130,9 +252,11 @@ private:
         const bool widening = (target == DataType::DInt && source == DataType::Int) ||
                               (target == DataType::Real && isNumeric(source));
         if (!widening) {
+            const char* hint = isNumeric(source) && isNumeric(target) ? " (values might not fit)"
+                               : target == DataType::Time            ? " (write times like T#500ms)"
+                                                                     : "";
             fail(value.location, fmt::format("can't assign {} to '{}', which is {}{}", dataTypeName(source),
-                                             targetName, dataTypeName(target),
-                                             isNumeric(source) && isNumeric(target) ? " (values might not fit)" : ""));
+                                             targetName, dataTypeName(target), hint));
         }
     }
 
@@ -156,6 +280,7 @@ private:
         expression.type = std::visit(Overloaded{
                                          [&](Literal& literal) { return literalType(literal); },
                                          [&](VariableRef& variable) { return variableType(variable, expression); },
+                                         [&](MemberRef& member) { return memberType(member, expression); },
                                          [&](UnaryExpression& unary) { return unaryType(unary, expression); },
                                          [&](BinaryExpression& binary) { return binaryType(binary, expression); },
                                      },
@@ -164,6 +289,7 @@ private:
     }
 
     static DataType literalType(const Literal& literal) {
+        if (literal.isTime) return DataType::Time;
         if (std::holds_alternative<bool>(literal.value)) return DataType::Bool;
         if (std::holds_alternative<std::int64_t>(literal.value)) return DataType::AnyInt;
         return DataType::Real;
@@ -175,13 +301,38 @@ private:
                                                   variable.name));
         }
         variable.slot = lookup(variable.name, expression.location);
-        return program_.variables[variable.slot].type;
+        const auto& declaration = variableAt(variable.slot);
+        if (declaration.type == DataType::FunctionBlock) {
+            fail(expression.location, fmt::format("'{}' is a {} instance, not a value; use one of its outputs, "
+                                                  "like {}.Q",
+                                                  variable.name, declaration.functionBlock->name, variable.name));
+        }
+        return declaration.type;
+    }
+
+    DataType memberType(MemberRef& member, const Expression& expression) {
+        if (constantsOnly_) {
+            fail(expression.location, "initial values must be constants");
+        }
+        const auto [instanceSlot, type] = lookupInstance(member.instance, expression.location, "has no members");
+        const auto memberSlot = findVariable(*type, member.member);
+        if (!memberSlot) {
+            fail(expression.location, fmt::format("{} has no input or output called '{}'", type->name, member.member));
+        }
+        const auto& declaration = type->variables[*memberSlot];
+        if (declaration.section == VarSection::Local) {
+            fail(expression.location, fmt::format("'{}' is internal to {}; only its inputs and outputs can be read",
+                                                  declaration.name, type->name));
+        }
+        member.instanceSlot = instanceSlot;
+        member.memberSlot = *memberSlot;
+        return declaration.type;
     }
 
     DataType unaryType(UnaryExpression& unary, const Expression& expression) {
         const auto operand = checkExpression(*unary.operand);
         if (unary.op == UnaryOperator::Negate) {
-            if (!isNumeric(operand)) {
+            if (!isNumeric(operand) && operand != DataType::Time) {
                 fail(expression.location, fmt::format("'-' needs a number, not {}", dataTypeName(operand)));
             }
             return operand;
@@ -200,6 +351,10 @@ private:
             fail(expression.location, fmt::format("'{}' needs {}, but got {} and {}", symbol, needs,
                                                   dataTypeName(left), dataTypeName(right)));
         };
+
+        if (left == DataType::Time || right == DataType::Time) {
+            return timeOperation(binary, left, right, mismatch);
+        }
 
         switch (binary.op) {
         case BinaryOperator::Add:
@@ -249,6 +404,38 @@ private:
         return DataType::Unknown;
     }
 
+    // TIME rules: TIME + TIME, TIME - TIME, TIME * integer, integer * TIME,
+    // TIME / integer, and comparing two TIMEs.
+    template <class Mismatch>
+    static DataType timeOperation(BinaryExpression& binary, DataType left, DataType right, Mismatch mismatch) {
+        const bool bothTime = left == DataType::Time && right == DataType::Time;
+        binary.operandType = DataType::Time;
+        switch (binary.op) {
+        case BinaryOperator::Add:
+        case BinaryOperator::Subtract:
+            if (!bothTime) mismatch("two TIMEs");
+            return DataType::Time;
+        case BinaryOperator::Multiply:
+            if (!(left == DataType::Time && isInteger(right)) && !(isInteger(left) && right == DataType::Time)) {
+                mismatch("a TIME and an integer");
+            }
+            return DataType::Time;
+        case BinaryOperator::Divide:
+            if (!(left == DataType::Time && isInteger(right))) mismatch("a TIME divided by an integer");
+            return DataType::Time;
+        case BinaryOperator::Equal:
+        case BinaryOperator::NotEqual:
+        case BinaryOperator::Less:
+        case BinaryOperator::LessEqual:
+        case BinaryOperator::Greater:
+        case BinaryOperator::GreaterEqual:
+            if (!bothTime) mismatch("two TIMEs");
+            return DataType::Bool;
+        default: mismatch("operands that aren't TIME");
+        }
+        return DataType::Unknown;
+    }
+
     void requireBool(Expression& condition, const char* what) {
         const auto type = checkExpression(condition);
         if (type != DataType::Bool) {
@@ -273,11 +460,43 @@ private:
 
     void check(Assignment& s, SourceLocation where) {
         s.slot = lookup(s.target, where);
+        const auto& target = variableAt(s.slot);
+        if (target.type == DataType::FunctionBlock) {
+            fail(where, fmt::format("can't assign to '{}': it's a {} instance", s.target, target.functionBlock->name));
+        }
         if (std::find(loopVariables_.begin(), loopVariables_.end(), s.slot) != loopVariables_.end()) {
             fail(where, fmt::format("'{}' is the variable of a FOR loop and can't be changed inside it", s.target));
         }
         checkExpression(*s.value);
-        checkAssignable(program_.variables[s.slot].type, *s.value, s.target);
+        checkAssignable(target.type, *s.value, s.target);
+    }
+
+    void check(CallStatement& s, SourceLocation where) {
+        const auto [instanceSlot, type] = lookupInstance(s.instance, where, "can't be called");
+        s.instanceSlot = instanceSlot;
+
+        std::set<std::size_t> given;
+        for (auto& argument : s.arguments) {
+            const auto memberSlot = findVariable(*type, argument.name);
+            if (!memberSlot) {
+                fail(argument.location, fmt::format("{} has no input called '{}'", type->name, argument.name));
+            }
+            const auto& input = type->variables[*memberSlot];
+            if (input.section == VarSection::Output) {
+                fail(argument.location, fmt::format("'{}' is an output of {}: read it after the call as {}.{}",
+                                                    input.name, type->name, s.instance, input.name));
+            }
+            if (input.section == VarSection::Local) {
+                fail(argument.location, fmt::format("'{}' is internal to {}; only its inputs can be set in a call",
+                                                    input.name, type->name));
+            }
+            if (!given.insert(*memberSlot).second) {
+                fail(argument.location, fmt::format("'{}' is given twice", input.name));
+            }
+            checkExpression(*argument.value);
+            checkAssignable(input.type, *argument.value, s.instance + "." + input.name);
+            argument.slot = *memberSlot;
+        }
     }
 
     void check(IfStatement& s, SourceLocation) {
@@ -308,10 +527,11 @@ private:
 
     void check(ForStatement& s, SourceLocation where) {
         s.slot = lookup(s.variable, where);
-        const auto& variable = program_.variables[s.slot];
+        const auto& variable = variableAt(s.slot);
         if (variable.type != DataType::Int && variable.type != DataType::DInt) {
-            fail(where, fmt::format("the FOR variable '{}' must be INT or DINT, not {}", s.variable,
-                                    dataTypeName(variable.type)));
+            const auto typeText =
+                variable.type == DataType::FunctionBlock ? variable.typeName : std::string(dataTypeName(variable.type));
+            fail(where, fmt::format("the FOR variable '{}' must be INT or DINT, not {}", s.variable, typeText));
         }
         for (Expression* bound : {s.from.get(), s.to.get(), s.step.get()}) {
             if (bound != nullptr) {
@@ -348,8 +568,12 @@ private:
 
     void check(ReturnStatement&, SourceLocation) const {}
 
-    ProgramUnit& program_;
-    std::unordered_map<std::string, std::size_t> slots_; // upper-case name -> index in program_.variables
+    CompilationUnit& unit_;
+    std::unordered_map<std::string, const Pou*> types_; // upper-case name -> function block (user or standard)
+
+    // State for the POU being checked
+    Pou* pou_ = nullptr;
+    std::unordered_map<std::string, std::size_t> slots_; // upper-case name -> index in pou_->variables
     std::vector<std::size_t> loopVariables_;             // slots of the FOR variables we're currently inside
     int loopDepth_ = 0;
     bool constantsOnly_ = false; // true while checking initial values
@@ -357,24 +581,24 @@ private:
 
 } // namespace
 
-tl::expected<void, Diagnostic> analyze(ProgramUnit& program) {
+tl::expected<void, Diagnostic> analyze(CompilationUnit& unit) {
     try {
-        Analyzer(program).run();
+        Analyzer(unit).run();
         return {};
     } catch (const AnalysisError& error) {
         return tl::unexpected(error.diagnostic);
     }
 }
 
-tl::expected<ProgramUnit, Diagnostic> compileProgram(std::string_view source) {
-    auto program = parseProgram(source);
-    if (!program) {
-        return tl::unexpected(program.error());
+tl::expected<CompilationUnit, Diagnostic> compileProgram(std::string_view source) {
+    auto unit = parseProgram(source);
+    if (!unit) {
+        return tl::unexpected(unit.error());
     }
-    if (auto checked = analyze(*program); !checked) {
+    if (auto checked = analyze(*unit); !checked) {
         return tl::unexpected(checked.error());
     }
-    return std::move(*program);
+    return std::move(*unit);
 }
 
 } // namespace softplc::st

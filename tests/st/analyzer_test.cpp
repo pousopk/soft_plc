@@ -31,11 +31,11 @@ TEST_CASE("A correct program passes and gets types and slots filled in") {
     auto result = compileProgram(program("small := small + 1;\nreal1 := small * 2.5;"));
     REQUIRE(result.has_value());
 
-    const auto& first = std::get<Assignment>(result->body[0].node);
+    const auto& first = std::get<Assignment>(result->program.body[0].node);
     CHECK(first.slot == 2); // flag, other, small
     CHECK(first.value->type == DataType::Int);
 
-    const auto& second = std::get<Assignment>(result->body[1].node);
+    const auto& second = std::get<Assignment>(result->program.body[1].node);
     CHECK(second.value->type == DataType::Real); // INT * REAL is REAL
 }
 
@@ -105,6 +105,11 @@ TEST_CASE("EXIT only inside loops") {
     CHECK(errorOf(program("EXIT;")) == "EXIT can only be used inside FOR, WHILE or REPEAT");
     CHECK(errorOf(program("IF flag THEN EXIT; END_IF;")) == "EXIT can only be used inside FOR, WHILE or REPEAT");
     CHECK(errorOf(program("WHILE flag DO IF other THEN EXIT; END_IF; END_WHILE;")) == "");
+}
+
+TEST_CASE("Unknown type names") {
+    CHECK(errorOf("PROGRAM P VAR x : WORD; END_VAR END_PROGRAM") ==
+          "unknown type 'WORD' (not BOOL, INT, DINT, REAL, TIME or a known function block)");
 }
 
 TEST_CASE("Undeclared and duplicate variables") {

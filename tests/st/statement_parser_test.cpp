@@ -126,7 +126,7 @@ TEST_CASE("A program with variable declarations") {
                                 "END_PROGRAM\n");
     REQUIRE(program.has_value());
     CHECK(dumpTree(*program) == "Program Main\n"
-                                "  Variables\n"
+                                "  Var\n"
                                 "    a : INT := 5\n"
                                 "    b : INT := 5\n"
                                 "    lamp AT %QX0.0 : BOOL\n"
@@ -135,7 +135,7 @@ TEST_CASE("A program with variable declarations") {
                                 "  Body\n"
                                 "    Assignment a\n"
                                 "      Variable b\n");
-    CHECK(program->variables[1].location == SourceLocation{3, 8});
+    CHECK(program->program.variables[1].location == SourceLocation{3, 8});
 }
 
 TEST_CASE("Statement syntax errors") {
@@ -171,16 +171,17 @@ TEST_CASE("Program syntax errors") {
         const char* messagePart;
     };
     const Case cases[] = {
-        {"x := 1;", "expected 'PROGRAM' at the start"},
+        {"x := 1;", "expected 'PROGRAM' or 'FUNCTION_BLOCK', found 'x'"},
+        {"", "expected a PROGRAM"},
+        {"PROGRAM A END_PROGRAM PROGRAM B END_PROGRAM", "a file can only have one PROGRAM"},
         {"PROGRAM VAR END_VAR END_PROGRAM", "expected the program name"},
         {"PROGRAM P VAR x INT; END_VAR END_PROGRAM", "expected ':' before the type"},
-        {"PROGRAM P VAR x : WORD; END_VAR END_PROGRAM", "unknown type 'WORD'"},
         {"PROGRAM P VAR x : INT END_VAR END_PROGRAM", "expected ';' at the end of the declaration"},
         {"PROGRAM P VAR a, b AT %MW0 : INT; END_VAR END_PROGRAM", "AT can only be used with a single variable"},
         {"PROGRAM P VAR x AT y : INT; END_VAR END_PROGRAM", "expected an address like %IX0.0 after AT"},
         {"PROGRAM P VAR 5 END_VAR END_PROGRAM", "expected a variable name or 'END_VAR'"},
         {"PROGRAM P x := 1;", "expected 'END_PROGRAM'"},
-        {"PROGRAM P END_PROGRAM x", "unexpected 'x' after END_PROGRAM"},
+        {"PROGRAM P END_PROGRAM x", "expected 'PROGRAM' or 'FUNCTION_BLOCK', found 'x'"},
     };
     for (const auto& c : cases) {
         CAPTURE(c.source);

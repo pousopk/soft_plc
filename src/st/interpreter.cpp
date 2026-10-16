@@ -1,12 +1,26 @@
 #include "st/interpreter.hpp"
+#include "st/builtins.hpp"
 #include "util/overloaded.hpp"
 #include "util/text.hpp"
 #include <bit>
 #include <cmath>
 #include <fmt/format.h>
-#include <limits>
+#include <vector>
 
 namespace softplc::st {
+
+// The memory of one POU instance.
+struct Instance {
+    const Pou* type = nullptr;
+    // One entry per variable of `type`, in declaration order. Unused for
+    // function block variables (see `children`) and AT variables (they live
+    // in the process image).
+    std::vector<Value> values;
+    // One entry per variable; set only for function block variables.
+    std::vector<std::unique_ptr<Instance>> children;
+    // Set only for standard blocks like TON: their behaviour in C++.
+    std::unique_ptr<NativeBlock> native;
+};
 
 namespace {
 
@@ -31,7 +45,8 @@ double roundToReal(double value) { return static_cast<double>(static_cast<float>
 std::int64_t wrapInteger(std::int64_t value, DataType type) {
     switch (type) {
     case DataType::Int: return static_cast<std::int16_t>(value);
-    case DataType::DInt: return static_cast<std::int32_t>(value);
+    case DataType::DInt:
+    case DataType::Time: return static_cast<std::int32_t>(value);
     default: return value; // AnyInt: a plain 64-bit calculation of literals
     }
 }
@@ -85,6 +100,16 @@ bool isComparison(BinaryOperator op) {
            op == BinaryOperator::LessEqual || op == BinaryOperator::Greater || op == BinaryOperator::GreaterEqual;
 }
 
+std::optional<std::size_t> findVariable(const Pou& pou, std::string_view name) {
+    const auto upper = toUpper(name);
+    for (std::size_t slot = 0; slot < pou.variables.size(); ++slot) {
+        if (toUpper(pou.variables[slot].name) == upper) {
+            return slot;
+        }
+    }
+    return std::nullopt;
+}
+
 // Connects the interpreter to a process image for the duration of one cycle,
 // and disconnects it again when the cycle ends, even if it ends with an
 // exception. This is RAII: the destructor does the cleanup.
@@ -101,59 +126,109 @@ private:
 
 } // namespace
 
-Interpreter::Interpreter(ProgramUnit program, std::uint64_t loopLimit)
-    : program_(std::move(program)), loopLimit_(loopLimit) {
-    values_.reserve(program_.variables.size());
-    for (const auto& variable : program_.variables) {
-        // Initial values are constants (the analyzer checked), so evaluating
-        // them doesn't need a process image.
-        values_.push_back(variable.initialValue ? convert(evaluate(*variable.initialValue), variable.type)
-                                                : defaultValue(variable.type));
-    }
+Interpreter::Interpreter(CompilationUnit unit, std::uint64_t loopLimit)
+    : unit_(std::make_unique<CompilationUnit>(std::move(unit))), loopLimit_(loopLimit) {
+    root_ = createInstance(unit_->program);
 }
 
-void Interpreter::runCycle(ProcessImage& image) {
+Interpreter::~Interpreter() = default;
+Interpreter::Interpreter(Interpreter&&) noexcept = default;
+Interpreter& Interpreter::operator=(Interpreter&&) noexcept = default;
+
+// Builds the memory for one instance of `pou`, and recursively for every
+// function block instance inside it.
+std::unique_ptr<Instance> Interpreter::createInstance(const Pou& pou) {
+    auto instance = std::make_unique<Instance>();
+    instance->type = &pou;
+    instance->children.resize(pou.variables.size());
+    instance->values.reserve(pou.variables.size());
+    for (std::size_t slot = 0; slot < pou.variables.size(); ++slot) {
+        const auto& variable = pou.variables[slot];
+        if (variable.type == DataType::FunctionBlock) {
+            instance->children[slot] = createInstance(*variable.functionBlock);
+            instance->values.push_back(Value{}); // placeholder, never used
+        } else if (variable.initialValue) {
+            // Initial values are constants (the analyzer checked), so this
+            // doesn't need a process image or any other variable.
+            instance->values.push_back(convert(evaluate(*variable.initialValue, *instance), variable.type));
+        } else {
+            instance->values.push_back(defaultValue(variable.type));
+        }
+    }
+    if (pou.builtin) {
+        instance->native = createBuiltin(pou.name);
+    }
+    return instance;
+}
+
+void Interpreter::runCycle(ProcessImage& image, TimePoint now) {
     ImageBinding binding(image_, image);
+    now_ = now;
     loopIterations_ = 0;
-    execute(program_.body); // a RETURN just ends the cycle early
+    run(*root_);
+}
+
+// Runs one instance's code once: the C++ behaviour of a standard block, or
+// the ST body of a PROGRAM or user function block.
+void Interpreter::run(Instance& instance) {
+    if (instance.native) {
+        instance.native->execute(instance.values, now_);
+    } else {
+        execute(instance.type->body, instance); // a RETURN just ends this run early
+    }
 }
 
 std::optional<Value> Interpreter::valueOf(std::string_view name, const ProcessImage& image) const {
-    const auto upper = toUpper(name);
-    for (std::size_t slot = 0; slot < program_.variables.size(); ++slot) {
-        if (toUpper(program_.variables[slot].name) == upper) {
-            return load(slot, image);
-        }
+    const auto dot = name.find('.');
+    const auto slot = findVariable(unit_->program, name.substr(0, dot));
+    if (!slot) {
+        return std::nullopt;
     }
-    return std::nullopt;
+    const auto& variable = unit_->program.variables[*slot];
+    if (dot == std::string_view::npos) {
+        if (variable.type == DataType::FunctionBlock) {
+            return std::nullopt; // an instance has no single value
+        }
+        return load(*root_, *slot, &image);
+    }
+    if (variable.type != DataType::FunctionBlock) {
+        return std::nullopt;
+    }
+    const auto& child = *root_->children[*slot];
+    const auto member = findVariable(*child.type, name.substr(dot + 1));
+    if (!member || child.type->variables[*member].type == DataType::FunctionBlock) {
+        return std::nullopt;
+    }
+    return child.values[*member];
 }
 
-Value Interpreter::valueOf(std::size_t slot, const ProcessImage& image) const { return load(slot, image); }
+Value Interpreter::valueOf(std::size_t slot, const ProcessImage& image) const { return load(*root_, slot, &image); }
 
 // ---------------------------------------------------------------- Variables
 
-Value Interpreter::load(std::size_t slot, const ProcessImage& image) const {
-    const auto& variable = program_.variables[slot];
+Value Interpreter::load(const Instance& self, std::size_t slot, const ProcessImage* image) const {
+    const auto& variable = self.type->variables[slot];
     if (!variable.address) {
-        return values_[slot];
+        return self.values[slot];
     }
     const auto& a = *variable.address;
     switch (variable.type) {
-    case DataType::Bool: return image.readBit(a.area, a.byteOffset, a.bit);
-    case DataType::Int: return std::int64_t{static_cast<std::int16_t>(image.readWord(a.area, a.byteOffset))};
-    case DataType::DInt: return std::int64_t{static_cast<std::int32_t>(image.readDWord(a.area, a.byteOffset))};
+    case DataType::Bool: return image->readBit(a.area, a.byteOffset, a.bit);
+    case DataType::Int: return std::int64_t{static_cast<std::int16_t>(image->readWord(a.area, a.byteOffset))};
+    case DataType::DInt:
+    case DataType::Time: return std::int64_t{static_cast<std::int32_t>(image->readDWord(a.area, a.byteOffset))};
     case DataType::Real:
         // The 32 bits in memory *are* the float: reinterpret them, don't convert the number.
-        return static_cast<double>(std::bit_cast<float>(image.readDWord(a.area, a.byteOffset)));
+        return static_cast<double>(std::bit_cast<float>(image->readDWord(a.area, a.byteOffset)));
     default: return defaultValue(variable.type);
     }
 }
 
-void Interpreter::store(std::size_t slot, const Value& value) {
-    const auto& variable = program_.variables[slot];
+void Interpreter::store(Instance& self, std::size_t slot, const Value& value) {
+    const auto& variable = self.type->variables[slot];
     const auto converted = convert(value, variable.type);
     if (!variable.address) {
-        values_[slot] = converted;
+        self.values[slot] = converted;
         return;
     }
     const auto& a = *variable.address;
@@ -163,6 +238,7 @@ void Interpreter::store(std::size_t slot, const Value& value) {
         image_->writeWord(a.area, a.byteOffset, static_cast<std::uint16_t>(std::get<std::int64_t>(converted)));
         break;
     case DataType::DInt:
+    case DataType::Time:
         image_->writeDWord(a.area, a.byteOffset, static_cast<std::uint32_t>(std::get<std::int64_t>(converted)));
         break;
     case DataType::Real:
@@ -175,46 +251,50 @@ void Interpreter::store(std::size_t slot, const Value& value) {
 
 // ---------------------------------------------------------------- Statements
 
-Interpreter::Flow Interpreter::execute(const StatementList& list) {
+Interpreter::Flow Interpreter::execute(const StatementList& list, Instance& self) {
     for (const auto& statement : list) {
-        if (const auto flow = execute(statement); flow != Flow::Normal) {
+        if (const auto flow = execute(statement, self); flow != Flow::Normal) {
             return flow; // EXIT or RETURN: stop this list and pass it outwards
         }
     }
     return Flow::Normal;
 }
 
-Interpreter::Flow Interpreter::execute(const Statement& statement) {
+Interpreter::Flow Interpreter::execute(const Statement& statement, Instance& self) {
     return std::visit(
         Overloaded{
             [&](const Assignment& s) {
-                store(s.slot, evaluate(*s.value));
+                store(self, s.slot, evaluate(*s.value, self));
+                return Flow::Normal;
+            },
+            [&](const CallStatement& s) {
+                call(s, self);
                 return Flow::Normal;
             },
             [&](const IfStatement& s) {
                 for (const auto& branch : s.branches) {
-                    if (std::get<bool>(evaluate(*branch.condition))) {
-                        return execute(branch.body);
+                    if (std::get<bool>(evaluate(*branch.condition, self))) {
+                        return execute(branch.body, self);
                     }
                 }
-                return execute(s.elseBody);
+                return execute(s.elseBody, self);
             },
             [&](const CaseStatement& s) {
-                const auto selector = toInteger(evaluate(*s.selector));
+                const auto selector = toInteger(evaluate(*s.selector, self));
                 for (const auto& branch : s.branches) {
                     for (const auto& range : branch.labels) {
                         if (range.low <= selector && selector <= range.high) {
-                            return execute(branch.body);
+                            return execute(branch.body, self);
                         }
                     }
                 }
-                return execute(s.elseBody);
+                return execute(s.elseBody, self);
             },
-            [&](const ForStatement& s) { return executeFor(s, statement.location); },
+            [&](const ForStatement& s) { return executeFor(s, statement.location, self); },
             [&](const WhileStatement& s) {
-                while (std::get<bool>(evaluate(*s.condition))) {
+                while (std::get<bool>(evaluate(*s.condition, self))) {
                     countLoopIteration(statement.location);
-                    const auto flow = execute(s.body);
+                    const auto flow = execute(s.body, self);
                     if (flow == Flow::Exit) break;
                     if (flow == Flow::Return) return Flow::Return;
                 }
@@ -223,10 +303,10 @@ Interpreter::Flow Interpreter::execute(const Statement& statement) {
             [&](const RepeatStatement& s) {
                 do {
                     countLoopIteration(statement.location);
-                    const auto flow = execute(s.body);
+                    const auto flow = execute(s.body, self);
                     if (flow == Flow::Exit) break;
                     if (flow == Flow::Return) return Flow::Return;
-                } while (!std::get<bool>(evaluate(*s.condition)));
+                } while (!std::get<bool>(evaluate(*s.condition, self)));
                 return Flow::Normal;
             },
             [&](const ExitStatement&) { return Flow::Exit; },
@@ -235,29 +315,39 @@ Interpreter::Flow Interpreter::execute(const Statement& statement) {
         statement.node);
 }
 
+// t1(IN := x, PT := T#2s): copy each given input into the instance, then run
+// it. Inputs that aren't given keep the value from the previous call.
+void Interpreter::call(const CallStatement& s, Instance& self) {
+    Instance& instance = *self.children[s.instanceSlot];
+    for (const auto& argument : s.arguments) {
+        store(instance, argument.slot, evaluate(*argument.value, self));
+    }
+    run(instance);
+}
+
 // FOR i := from TO to BY step: the bounds are evaluated once, before the
 // first iteration. The loop runs while i <= to (or i >= to when stepping down).
-Interpreter::Flow Interpreter::executeFor(const ForStatement& s, SourceLocation where) {
-    const auto to = toInteger(evaluate(*s.to));
-    const auto step = s.step ? toInteger(evaluate(*s.step)) : 1;
+Interpreter::Flow Interpreter::executeFor(const ForStatement& s, SourceLocation where, Instance& self) {
+    const auto to = toInteger(evaluate(*s.to, self));
+    const auto step = s.step ? toInteger(evaluate(*s.step, self)) : 1;
     if (step == 0) {
         throw RuntimeError{"FOR loop with BY 0 would never end", where};
     }
-    const auto type = program_.variables[s.slot].type;
+    const auto type = self.type->variables[s.slot].type;
 
-    store(s.slot, evaluate(*s.from));
+    store(self, s.slot, evaluate(*s.from, self));
     for (;;) {
-        const auto current = toInteger(load(s.slot, *image_));
+        const auto current = toInteger(load(self, s.slot, image_));
         if (step > 0 ? current > to : current < to) {
             return Flow::Normal;
         }
         countLoopIteration(where);
-        const auto flow = execute(s.body);
+        const auto flow = execute(s.body, self);
         if (flow == Flow::Exit) return Flow::Normal;
         if (flow == Flow::Return) return Flow::Return;
         // Wraps like the PLC would: FOR i := 0 TO 32767 never ends with an INT
         // (i wraps from 32767 to -32768), which the watchdog then catches.
-        store(s.slot, wrapInteger(add(current, step), type));
+        store(self, s.slot, wrapInteger(add(current, step), type));
     }
 }
 
@@ -269,12 +359,15 @@ void Interpreter::countLoopIteration(SourceLocation where) {
 
 // ---------------------------------------------------------------- Expressions
 
-Value Interpreter::evaluate(const Expression& expression) {
+Value Interpreter::evaluate(const Expression& expression, Instance& self) {
     return std::visit(Overloaded{
                           [](const Literal& literal) { return literal.value; },
-                          [&](const VariableRef& variable) { return load(variable.slot, *image_); },
+                          [&](const VariableRef& variable) { return load(self, variable.slot, image_); },
+                          [&](const MemberRef& member) {
+                              return self.children[member.instanceSlot]->values[member.memberSlot];
+                          },
                           [&](const UnaryExpression& unary) -> Value {
-                              const auto operand = evaluate(*unary.operand);
+                              const auto operand = evaluate(*unary.operand, self);
                               if (unary.op == UnaryOperator::Not) {
                                   return !std::get<bool>(operand);
                               }
@@ -283,14 +376,14 @@ Value Interpreter::evaluate(const Expression& expression) {
                               }
                               return wrapInteger(subtract(0, toInteger(operand)), expression.type);
                           },
-                          [&](const BinaryExpression& binary) { return evaluateBinary(binary, expression); },
+                          [&](const BinaryExpression& binary) { return evaluateBinary(binary, expression, self); },
                       },
                       expression.node);
 }
 
-Value Interpreter::evaluateBinary(const BinaryExpression& binary, const Expression& expression) {
-    const auto left = evaluate(*binary.left);
-    const auto right = evaluate(*binary.right);
+Value Interpreter::evaluateBinary(const BinaryExpression& binary, const Expression& expression, Instance& self) {
+    const auto left = evaluate(*binary.left, self);
+    const auto right = evaluate(*binary.right, self);
     const auto type = binary.operandType;
 
     if (isComparison(binary.op)) {
@@ -319,6 +412,7 @@ Value Interpreter::evaluateBinary(const BinaryExpression& binary, const Expressi
         }
     }
 
+    // Integers, and TIME (milliseconds, also an integer underneath).
     const auto a = toInteger(left);
     const auto b = toInteger(right);
     switch (binary.op) {

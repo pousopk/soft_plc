@@ -1,6 +1,7 @@
 #include "st/parser.hpp"
 #include "st/lexer.hpp"
 #include "util/text.hpp"
+#include <algorithm>
 #include <fmt/format.h>
 #include <initializer_list>
 #include <utility>
@@ -15,10 +16,12 @@ struct ParseError {
     Diagnostic diagnostic;
 };
 
-// Keywords that close or split a block of statements.
+// Keywords that close or split a block of statements, plus the ones that
+// start a new POU (which mean the current one wasn't closed).
 constexpr std::initializer_list<TokenKind> blockEnds = {
     TokenKind::EndIf,    TokenKind::Elsif,  TokenKind::Else,      TokenKind::EndCase,    TokenKind::EndFor,
     TokenKind::EndWhile, TokenKind::Until,  TokenKind::EndRepeat, TokenKind::EndProgram, TokenKind::EndVar,
+    TokenKind::EndFunctionBlock, TokenKind::Program, TokenKind::FunctionBlock,
 };
 
 ExpressionPtr makeExpression(decltype(Expression::node) node, SourceLocation location) {
@@ -47,19 +50,39 @@ class Parser {
 public:
     explicit Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
 
-    ProgramUnit program() {
-        ProgramUnit unit;
-        expect(TokenKind::Program, "'PROGRAM' at the start");
-        unit.name = expect(TokenKind::Identifier, "the program name after PROGRAM").text;
-        while (check(TokenKind::Var)) {
-            varBlock(unit.variables);
+    // A whole file: any number of FUNCTION_BLOCKs and exactly one PROGRAM, in any order.
+    CompilationUnit compilationUnit() {
+        CompilationUnit unit;
+        bool haveProgram = false;
+        while (!check(TokenKind::EndOfFile)) {
+            if (check(TokenKind::FunctionBlock)) {
+                unit.functionBlocks.push_back(pou(PouKind::FunctionBlock));
+            } else if (check(TokenKind::Program)) {
+                if (haveProgram) {
+                    fail(peek(), "a file can only have one PROGRAM");
+                }
+                unit.program = pou(PouKind::Program);
+                haveProgram = true;
+            } else {
+                fail(peek(), fmt::format("expected 'PROGRAM' or 'FUNCTION_BLOCK', found {}", describe(peek())));
+            }
         }
-        unit.body = statementList({});
-        expect(TokenKind::EndProgram, "'END_PROGRAM' at the end of the program");
-        if (!check(TokenKind::EndOfFile)) {
-            fail(peek(), fmt::format("unexpected {} after END_PROGRAM", describe(peek())));
+        if (!haveProgram) {
+            fail(peek(), "expected a PROGRAM");
         }
         return unit;
+    }
+
+    // Only FUNCTION_BLOCKs, used for the built-in standard library.
+    std::vector<Pou> functionBlocksOnly() {
+        std::vector<Pou> blocks;
+        while (!check(TokenKind::EndOfFile)) {
+            if (!check(TokenKind::FunctionBlock)) {
+                fail(peek(), fmt::format("expected 'FUNCTION_BLOCK', found {}", describe(peek())));
+            }
+            blocks.push_back(pou(PouKind::FunctionBlock));
+        }
+        return blocks;
     }
 
     StatementList statementsOnly() {
@@ -81,19 +104,43 @@ public:
 private:
     // ------------------------------------------------------------ Declarations
 
-    // VAR  name, name AT %addr : TYPE := value;  ...  END_VAR
+    // PROGRAM Name ... END_PROGRAM  or  FUNCTION_BLOCK Name ... END_FUNCTION_BLOCK
+    Pou pou(PouKind kind) {
+        const bool isProgram = kind == PouKind::Program;
+        Pou unit;
+        unit.kind = kind;
+        unit.location = advance().location; // PROGRAM or FUNCTION_BLOCK
+        unit.name = expect(TokenKind::Identifier, isProgram ? "the program name after PROGRAM"
+                                                            : "the function block name after FUNCTION_BLOCK")
+                        .text;
+        while (checkAny({TokenKind::Var, TokenKind::VarInput, TokenKind::VarOutput})) {
+            varBlock(unit.variables);
+        }
+        unit.body = statementList({});
+        if (isProgram) {
+            expect(TokenKind::EndProgram, "'END_PROGRAM' at the end of the program");
+        } else {
+            expect(TokenKind::EndFunctionBlock, "'END_FUNCTION_BLOCK' at the end of the function block");
+        }
+        return unit;
+    }
+
+    // VAR / VAR_INPUT / VAR_OUTPUT  name, name AT %addr : TYPE := value;  ...  END_VAR
     void varBlock(std::vector<VariableDeclaration>& variables) {
-        advance(); // VAR
+        const auto opener = advance().kind;
+        const auto section = opener == TokenKind::VarInput    ? VarSection::Input
+                             : opener == TokenKind::VarOutput ? VarSection::Output
+                                                              : VarSection::Local;
         while (!check(TokenKind::EndVar)) {
             if (!check(TokenKind::Identifier)) {
                 fail(peek(), fmt::format("expected a variable name or 'END_VAR', found {}", describe(peek())));
             }
-            declarationLine(variables);
+            declarationLine(variables, section);
         }
         advance(); // END_VAR
     }
 
-    void declarationLine(std::vector<VariableDeclaration>& variables) {
+    void declarationLine(std::vector<VariableDeclaration>& variables, VarSection section) {
         std::vector<const Token*> names{&advance()};
         while (check(TokenKind::Comma)) {
             advance();
@@ -110,7 +157,7 @@ private:
         }
 
         expect(TokenKind::Colon, "':' before the type");
-        const DataType type = typeName();
+        const auto [type, typeText] = typeName();
 
         ExpressionPtr initialValue;
         if (check(TokenKind::Assign)) {
@@ -121,20 +168,29 @@ private:
 
         // `a, b : INT := 5;` declares two variables, each with its own copy of the initial value.
         for (const Token* name : names) {
-            variables.push_back(VariableDeclaration{name->text, type, address,
-                                                    initialValue ? cloneExpression(*initialValue) : nullptr,
-                                                    name->location});
+            VariableDeclaration declaration;
+            declaration.name = name->text;
+            declaration.type = type;
+            declaration.typeName = typeText;
+            declaration.section = section;
+            declaration.address = address;
+            declaration.initialValue = initialValue ? cloneExpression(*initialValue) : nullptr;
+            declaration.location = name->location;
+            variables.push_back(std::move(declaration));
         }
     }
 
-    DataType typeName() {
+    // An elementary type (BOOL, INT, ...) or, for any other name, a function
+    // block type. Whether that function block exists is the analyzer's job.
+    std::pair<DataType, std::string> typeName() {
         const Token& token = expect(TokenKind::Identifier, "a type name");
         const auto upper = toUpper(token.text);
-        if (upper == "BOOL") return DataType::Bool;
-        if (upper == "INT") return DataType::Int;
-        if (upper == "DINT") return DataType::DInt;
-        if (upper == "REAL") return DataType::Real;
-        fail(token, fmt::format("unknown type '{}' (supported: BOOL, INT, DINT, REAL)", token.text));
+        if (upper == "BOOL") return {DataType::Bool, upper};
+        if (upper == "INT") return {DataType::Int, upper};
+        if (upper == "DINT") return {DataType::DInt, upper};
+        if (upper == "REAL") return {DataType::Real, upper};
+        if (upper == "TIME") return {DataType::Time, upper};
+        return {DataType::FunctionBlock, token.text};
     }
 
     // ------------------------------------------------------------ Statements
@@ -157,7 +213,16 @@ private:
 
     Statement statement() {
         switch (peek().kind) {
-        case TokenKind::Identifier: return assignment();
+        case TokenKind::Identifier:
+            if (peekNext().kind == TokenKind::LeftParen) {
+                return call();
+            }
+            if (peekNext().kind == TokenKind::Dot) {
+                fail(peekNext(), fmt::format("can't assign to a member of '{}': set inputs in the call, like "
+                                             "{}(IN := ...); outputs are read-only",
+                                             peek().text, peek().text));
+            }
+            return assignment();
         case TokenKind::If: return ifStatement();
         case TokenKind::Case: return caseStatement();
         case TokenKind::For: return forStatement();
@@ -184,6 +249,24 @@ private:
         auto value = expression();
         expect(TokenKind::Semicolon, "';' at the end of the statement");
         return Statement{Assignment{target.text, std::move(value)}, target.location};
+    }
+
+    // instance(NAME := value, NAME := value);
+    Statement call() {
+        const Token& instance = advance();
+        advance(); // '('
+        CallStatement s;
+        s.instance = instance.text;
+        if (!check(TokenKind::RightParen)) {
+            do {
+                const Token& name = expect(TokenKind::Identifier, "an input name like IN in the call");
+                expect(TokenKind::Assign, fmt::format("':=' after '{}'", name.text));
+                s.arguments.push_back(CallArgument{name.text, expression(), name.location});
+            } while (match(TokenKind::Comma));
+        }
+        expect(TokenKind::RightParen, "')' to close the call");
+        expect(TokenKind::Semicolon, "';' after the call");
+        return Statement{std::move(s), instance.location};
     }
 
     // IF c THEN ... ELSIF c THEN ... ELSE ... END_IF;
@@ -388,8 +471,20 @@ private:
         case TokenKind::False:
             advance();
             return makeExpression(Literal{token.kind == TokenKind::True}, token.location);
+        case TokenKind::Time:
+            advance();
+            return makeExpression(Literal{std::get<std::int64_t>(token.value), true}, token.location);
         case TokenKind::Identifier:
             advance();
+            if (match(TokenKind::Dot)) {
+                const Token& member = expect(TokenKind::Identifier, fmt::format("a member name after '{}.'", token.text));
+                return makeExpression(MemberRef{token.text, member.text}, token.location);
+            }
+            if (check(TokenKind::LeftParen)) {
+                fail(peek(), fmt::format("function block calls are statements: write '{}(...);' on its own, "
+                                         "then use its outputs like {}.Q",
+                                         token.text, token.text));
+            }
             return makeExpression(VariableRef{token.text}, token.location);
         case TokenKind::LeftParen: {
             advance();
@@ -404,6 +499,9 @@ private:
     // ------------------------------------------------------------ Token helpers
 
     const Token& peek() const { return tokens_[pos_]; }
+
+    // The token after the next one (or EndOfFile).
+    const Token& peekNext() const { return tokens_[std::min(pos_ + 1, tokens_.size() - 1)]; }
 
     bool check(TokenKind kind) const { return peek().kind == kind; }
 
@@ -457,7 +555,8 @@ private:
 
 // Shared by the public functions: tokenize, run one parser rule, and turn
 // any error into a tl::expected error.
-template <class Rule> auto parseWith(std::string_view source, Rule rule) -> tl::expected<decltype(rule(std::declval<Parser&>())), Diagnostic> {
+template <class Rule>
+auto parseWith(std::string_view source, Rule rule) -> tl::expected<decltype(rule(std::declval<Parser&>())), Diagnostic> {
     auto tokens = tokenize(source);
     if (!tokens) {
         return tl::unexpected(tokens.error());
@@ -472,8 +571,12 @@ template <class Rule> auto parseWith(std::string_view source, Rule rule) -> tl::
 
 } // namespace
 
-tl::expected<ProgramUnit, Diagnostic> parseProgram(std::string_view source) {
-    return parseWith(source, [](Parser& parser) { return parser.program(); });
+tl::expected<CompilationUnit, Diagnostic> parseProgram(std::string_view source) {
+    return parseWith(source, [](Parser& parser) { return parser.compilationUnit(); });
+}
+
+tl::expected<std::vector<Pou>, Diagnostic> parseFunctionBlocks(std::string_view source) {
+    return parseWith(source, [](Parser& parser) { return parser.functionBlocksOnly(); });
 }
 
 tl::expected<StatementList, Diagnostic> parseStatements(std::string_view source) {

@@ -16,7 +16,7 @@ public:
     void writeOutputs(const ProcessImage&) override {}
 };
 
-ProgramUnit compile(std::string_view source) {
+CompilationUnit compile(std::string_view source) {
     auto program = compileProgram(source);
     REQUIRE(program.has_value());
     return std::move(*program);
