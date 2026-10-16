@@ -1,6 +1,9 @@
 #pragma once
 #include "st/ast.hpp"
 #include "st/diagnostic.hpp"
+#include <cstddef>
+#include <cstdint>
+#include <map>
 #include <string_view>
 #include <tl/expected.hpp>
 
@@ -25,5 +28,9 @@ tl::expected<void, Diagnostic> analyze(CompilationUnit& unit);
 
 // Parses and analyzes in one step: the program is ready to run if this succeeds.
 tl::expected<CompilationUnit, Diagnostic> compileProgram(std::string_view source);
+
+// The data blocks the program's AT variables use, with the smallest size
+// each one needs: `x AT %DB5.DBW10 : INT` needs DB5 with at least 12 bytes.
+std::map<std::uint16_t, std::size_t> dataBlocksUsedBy(const CompilationUnit& unit);
 
 } // namespace softplc::st

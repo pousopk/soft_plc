@@ -1,0 +1,44 @@
+# plc_gui config for examples/s7_demo.st, running in soft_plc:
+#
+#   ./build/soft_plc --s7 examples/s7_demo.st                  # this repo
+#   ./build/plc_gui --config <path to this file>               # in ~/code/plc_gui
+#
+# plc_gui always connects to port 102, so soft_plc needs the rights to use it
+# (see the soft_plc README).
+plc:
+  name: "soft_plc mixer"
+  ip: "127.0.0.1"
+  rack: 0
+  slot: 1
+  connect_timeout_ms: 2000
+  reconnect_backoff_ms: [500, 1000, 2000, 5000]
+
+tags:
+  - { id: start,    db: 1, type: bool, offset: 0,  bit: 0, update_interval_ms: 100, label: "Start" }
+  - { id: stop,     db: 1, type: bool, offset: 0,  bit: 1, update_interval_ms: 100, label: "Stop" }
+  - { id: setpoint, db: 1, type: real, offset: 2,  update_interval_ms: 100, label: "Setpoint (rpm)" }
+  - { id: speed,    db: 1, type: real, offset: 6,  update_interval_ms: 100, label: "Speed (rpm)" }
+  - { id: running,  db: 1, type: bool, offset: 10, bit: 0, update_interval_ms: 100, label: "Running" }
+  - { id: at_speed, db: 1, type: bool, offset: 10, bit: 1, update_interval_ms: 100, label: "At speed" }
+  - { id: starts,   db: 1, type: int,  offset: 12, update_interval_ms: 500, label: "Starts" }
+  - { id: run_time, db: 1, type: time, offset: 14, update_interval_ms: 500, label: "Run time" }
+
+panels:
+  - title: "Mixer"
+    layout: vertical
+    widgets:
+      - { type: button, tag: start, label: "Start" }
+      - { type: button, tag: stop, label: "Stop" }
+      - { type: slider, tag: setpoint, label: "Setpoint", min: "0", max: "3000" }
+      - { type: text_display, tag: speed, label: "Speed", format: "%.0f rpm" }
+      - { type: led_indicator, tag: running, label: "Running" }
+      - { type: led_indicator, tag: at_speed, label: "At speed" }
+      - { type: text_display, tag: starts, label: "Starts", format: "%.0f" }
+
+logging:
+  sinks:
+    - { id: csv_main, type: csv, path: "logs/soft_plc_mixer.csv" }
+  rules:
+    - tags: [setpoint, speed, running, starts]
+      interval_ms: 500
+      sinks: [csv_main]

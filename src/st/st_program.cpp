@@ -1,5 +1,6 @@
 #include "st/st_program.hpp"
 #include <algorithm>
+#include <stdexcept>
 
 namespace softplc::st {
 
@@ -15,12 +16,20 @@ void StProgram::execute(ProcessImage& image, const CycleContext& context) {
         interpreter_.runCycle(image, context.now);
         applyForces(image);
     } catch (const RuntimeError& error) {
-        stopError_ = error;
-        const auto outputs = image.bytes(Area::Output);
-        std::fill(outputs.begin(), outputs.end(), std::uint8_t{0});
-        if (onStop_) {
-            onStop_(error);
-        }
+        stop(image, error);
+    } catch (const std::out_of_range& error) {
+        // An AT variable outside the process image (e.g. a missing data
+        // block): an "area error", which also stops a real PLC.
+        stop(image, RuntimeError{error.what(), {}});
+    }
+}
+
+void StProgram::stop(ProcessImage& image, const RuntimeError& error) {
+    stopError_ = error;
+    const auto outputs = image.bytes(Area::Output);
+    std::fill(outputs.begin(), outputs.end(), std::uint8_t{0});
+    if (onStop_) {
+        onStop_(error);
     }
 }
 

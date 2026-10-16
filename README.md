@@ -36,6 +36,20 @@ When a program stops (Ctrl+C or a runtime error), `soft_plc` prints the final va
 
 The GUI needs GLFW and OpenGL development files (`libglfw3-dev`, `libgl-dev`); without them the rest still builds. The protocol is one line of text per request, so it can also be used by hand, e.g. `nc 127.0.0.1 5020`, then `READ fast.out`, `FORCE doneLamp TRUE`, `STATUS`. See `src/monitor/monitor_service.hpp` for every command. With `--monitor`, a runtime error leaves the PLC in STOP (instead of exiting) so the monitor can show why.
 
+### S7 server
+
+```bash
+./build/soft_plc --s7 examples/s7_demo.st          # an S7 server on 127.0.0.1:102, rack 0, slot 1
+./build/soft_plc --s7=1102 examples/s7_demo.st     # on another port (no extra rights needed)
+./build/soft_plc --s7 --db 10:256 program.st       # also create DB10 with 256 bytes
+```
+
+S7 clients (`plc_gui`, an HMI, Snap7, `factory_sim` later) can then read and write the inputs, outputs, markers and data blocks. Data blocks used with `AT %DBn...` are created automatically, as big as the program needs. `examples/plc_gui_s7_demo.yaml` is a `plc_gui` config for `examples/s7_demo.st`.
+
+S7 always uses port 102, and Linux only lets privileged programs listen on ports below 1024. Either allow it for everyone (`sudo sysctl net.ipv4.ip_unprivileged_port_start=102`) or for this binary only (`sudo setcap cap_net_bind_service=+ep ./build/soft_plc`, needed again after every rebuild).
+
+Snap7 is fetched and patched automatically (`cmake/patch_snap7.cmake`): it fixes a C++17 compile error, two memory bugs, and a missing `return` in Snap7's server code that crashed it as soon as a client asked for the CPU state.
+
 For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release`.
 
 ## Structured Text supported so far
@@ -43,7 +57,7 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 - `PROGRAM … END_PROGRAM` with `VAR … END_VAR` blocks
 - `FUNCTION_BLOCK … END_FUNCTION_BLOCK` with `VAR_INPUT`, `VAR_OUTPUT` and `VAR`; instances (`t1 : TON;`), calls (`t1(IN := x, PT := T#2s);`) and outputs (`t1.Q`)
 - Standard blocks: `TON`, `TOF`, `TP`, `CTU`, `CTD`, `R_TRIG`, `F_TRIG`, `SR`, `RS`
-- Types `BOOL`, `INT`, `DINT`, `REAL`, `TIME`; initial values (`count : INT := 5;`); `AT %QX0.0` to place a variable in the process image
+- Types `BOOL`, `INT`, `DINT`, `REAL`, `TIME`; initial values (`count : INT := 5;`); `AT %QX0.0` or `AT %DB1.DBW2` to place a variable in the process image or a data block
 - Statements: `:=`, `IF/ELSIF/ELSE`, `CASE` (lists and ranges), `FOR … BY`, `WHILE`, `REPEAT … UNTIL`, `EXIT`, `RETURN`
 - Operators: `+ - * / MOD **`, `= <> < <= > >=`, `AND & OR XOR NOT`
 - Literals: `42`, `1_000`, `16#FF`, `2#1010`, `3.14`, `1.5E3`, `TRUE`, `FALSE`, `T#1m30s`; comments `(* … *)` and `//`
@@ -56,6 +70,8 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 | `src/stdlib/` | Standard function blocks in C++: timers, counters, edges, flip-flops |
 | `src/st/` | Structured Text: lexer, syntax tree, parser, analyzer (type checks), interpreter, standard block bridge |
 | `src/monitor/` | Online monitoring: request handling, TCP server and client |
+| `src/s7/` | S7 server (Snap7) sharing the process image with S7 clients |
+| `cmake/` | Snap7 build recipe and source patches |
 | `src/demo/` | Demo program and console I/O driver used by `main.cpp` |
 | `src/util/` | Small general-purpose helpers |
 | `tools/` | `st_parse` (command line) and `monitor_gui/` (the `soft_plc_monitor` GUI) |

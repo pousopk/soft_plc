@@ -590,6 +590,20 @@ tl::expected<void, Diagnostic> analyze(CompilationUnit& unit) {
     }
 }
 
+std::map<std::uint16_t, std::size_t> dataBlocksUsedBy(const CompilationUnit& unit) {
+    std::map<std::uint16_t, std::size_t> sizes;
+    for (const auto& variable : unit.program.variables) { // AT is only allowed in the PROGRAM
+        if (!variable.address || variable.address->area != Area::DataBlock) {
+            continue;
+        }
+        const auto& a = *variable.address;
+        const std::size_t width = a.size == AccessSize::Word ? 2 : a.size == AccessSize::DWord ? 4 : 1;
+        auto& size = sizes[a.dbNumber];
+        size = std::max(size, a.byteOffset + width);
+    }
+    return sizes;
+}
+
 tl::expected<CompilationUnit, Diagnostic> compileProgram(std::string_view source) {
     auto unit = parseProgram(source);
     if (!unit) {

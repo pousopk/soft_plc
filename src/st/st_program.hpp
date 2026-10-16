@@ -44,6 +44,7 @@ public:
 
 private:
     void applyForces(ProcessImage& image);
+    void stop(ProcessImage& image, const RuntimeError& error);
 
     Interpreter interpreter_;
     StopHandler onStop_;

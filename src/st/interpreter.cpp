@@ -278,15 +278,17 @@ Value Interpreter::load(const Instance& self, std::size_t slot, const ProcessIma
     if (!variable.address) {
         return self.values[slot];
     }
-    const auto& a = *variable.address;
+    // AT variables: the analyzer made sure the address size matches the type
+    // (bit for BOOL, word for INT, double word for DINT/REAL/TIME).
+    const auto raw = image->read(*variable.address);
     switch (variable.type) {
-    case DataType::Bool: return image->readBit(a.area, a.byteOffset, a.bit);
-    case DataType::Int: return std::int64_t{static_cast<std::int16_t>(image->readWord(a.area, a.byteOffset))};
+    case DataType::Bool: return raw != 0;
+    case DataType::Int: return std::int64_t{static_cast<std::int16_t>(raw)};
     case DataType::DInt:
-    case DataType::Time: return std::int64_t{static_cast<std::int32_t>(image->readDWord(a.area, a.byteOffset))};
+    case DataType::Time: return std::int64_t{static_cast<std::int32_t>(raw)};
     case DataType::Real:
         // The 32 bits in memory *are* the float: reinterpret them, don't convert the number.
-        return static_cast<double>(std::bit_cast<float>(image->readDWord(a.area, a.byteOffset)));
+        return static_cast<double>(std::bit_cast<float>(raw));
     default: return defaultValue(variable.type);
     }
 }
@@ -298,22 +300,13 @@ void Interpreter::store(Instance& self, std::size_t slot, const Value& value) {
         self.values[slot] = converted;
         return;
     }
-    const auto& a = *variable.address;
+    std::uint32_t raw = 0;
     switch (variable.type) {
-    case DataType::Bool: image_->writeBit(a.area, a.byteOffset, a.bit, std::get<bool>(converted)); break;
-    case DataType::Int:
-        image_->writeWord(a.area, a.byteOffset, static_cast<std::uint16_t>(std::get<std::int64_t>(converted)));
-        break;
-    case DataType::DInt:
-    case DataType::Time:
-        image_->writeDWord(a.area, a.byteOffset, static_cast<std::uint32_t>(std::get<std::int64_t>(converted)));
-        break;
-    case DataType::Real:
-        image_->writeDWord(a.area, a.byteOffset,
-                           std::bit_cast<std::uint32_t>(static_cast<float>(std::get<double>(converted))));
-        break;
-    default: break;
+    case DataType::Bool: raw = std::get<bool>(converted) ? 1u : 0u; break;
+    case DataType::Real: raw = std::bit_cast<std::uint32_t>(static_cast<float>(std::get<double>(converted))); break;
+    default: raw = static_cast<std::uint32_t>(std::get<std::int64_t>(converted)); break; // INT, DINT, TIME
     }
+    image_->write(*variable.address, raw);
 }
 
 // ---------------------------------------------------------------- Statements

@@ -124,7 +124,7 @@ TEST_CASE("Lexical errors report what went wrong and where") {
     };
     const Case cases[] = {
         {"a := $;", "unexpected character '$'", {1, 6}},
-        {"x AT %Z0.0", "area must be I, Q or M", {1, 6}},
+        {"x AT %Z0.0", "area must be I, Q, M or DB", {1, 6}},
         {"x AT %IX0.9", "bit number must be 0-7", {1, 6}},
         {"(* never closed", "never closed", {1, 1}},
         {"x := 12abc;", "invalid number", {1, 6}},

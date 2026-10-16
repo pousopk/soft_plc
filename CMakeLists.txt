@@ -49,6 +49,9 @@ endfunction()
 soft_plc_mark_system(fmt)
 soft_plc_mark_system(expected)
 
+# --- Snap7: the S7 protocol, for the S7 server (see cmake/snap7.cmake) ---
+include(cmake/snap7.cmake)
+
 # --- Shared compile settings for our own targets ---
 add_library(soft_plc_options INTERFACE)
 target_compile_options(soft_plc_options INTERFACE
@@ -82,10 +85,12 @@ add_library(soft_plc_core STATIC
   src/monitor/monitor_service.cpp
   src/monitor/monitor_server.cpp
   src/monitor/monitor_client.cpp
+  src/s7/s7_server.cpp
 )
 target_include_directories(soft_plc_core PUBLIC src)
 target_link_libraries(soft_plc_core
   PUBLIC  soft_plc_options tl::expected Threads::Threads
+  PRIVATE snap7_static
   PRIVATE fmt::fmt
 )
 
