@@ -157,3 +157,17 @@ TEST_CASE("run counts an overrun when the program takes longer than the cycle ti
     CHECK(plc.stats().cycles == 3);
     CHECK(plc.stats().overruns == 3);
 }
+
+TEST_CASE("run calls the idle task once after every cycle") {
+    std::atomic<bool> stop{false};
+    ProcessImage image(0, 0, 0);
+    NullIo io;
+    CountingProgram program(stop, /*stopAfter=*/4);
+    ScanCycle plc(image, io, program, 1ms);
+
+    std::vector<std::uint64_t> cyclesSeen;
+    plc.setIdleTask([&] { cyclesSeen.push_back(plc.stats().cycles); });
+    plc.run(stop);
+
+    CHECK(cyclesSeen == std::vector<std::uint64_t>{1, 2, 3, 4});
+}

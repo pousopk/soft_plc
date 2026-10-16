@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace softplc::st {
 
@@ -16,6 +17,12 @@ namespace softplc::st {
 struct RuntimeError {
     std::string message;
     SourceLocation location;
+};
+
+// One elementary variable, anywhere in the instance tree.
+struct VariableInfo {
+    std::string path; // "count", "fast.out", "fast.offTimer.ET", spelled as declared
+    DataType type;
 };
 
 // The memory of one PROGRAM or function block instance. Defined in
@@ -48,9 +55,23 @@ public:
     // timers use. Throws RuntimeError on errors.
     void runCycle(ProcessImage& image, TimePoint now);
 
-    // The current value of a program variable, by name (case-insensitive),
-    // or of an instance member: "count" or "t1.Q".
-    std::optional<Value> valueOf(std::string_view name, const ProcessImage& image) const;
+    // Every elementary variable of the program and, recursively, of every
+    // function block instance inside it, including their internal variables.
+    // This is what a monitoring tool can see (it may see more than ST code can).
+    std::vector<VariableInfo> variables() const;
+
+    // Looks up a variable by path, case-insensitively: "count", "t1.Q",
+    // "fast.offTimer.ET". Gives its spelling as declared, and its type.
+    std::optional<VariableInfo> describe(std::string_view path) const;
+
+    // The current value of a variable, by path (see describe()).
+    std::optional<Value> valueOf(std::string_view path, const ProcessImage& image) const;
+
+    // Writes a variable from outside the program, the way a monitoring tool
+    // does. The value is converted to the variable's type (it must be of the
+    // right kind: a bool for BOOL, an integer for INT/DINT/TIME, a number for
+    // REAL). Returns false if there's no such variable.
+    bool setValue(std::string_view path, const Value& value, ProcessImage& image);
 
     // The current value of a program variable by slot (not for instances).
     Value valueOf(std::size_t slot, const ProcessImage& image) const;

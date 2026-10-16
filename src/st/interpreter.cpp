@@ -4,6 +4,7 @@
 #include "util/text.hpp"
 #include <bit>
 #include <cmath>
+#include <utility>
 #include <fmt/format.h>
 #include <vector>
 
@@ -178,28 +179,94 @@ void Interpreter::run(Instance& instance) {
     }
 }
 
-std::optional<Value> Interpreter::valueOf(std::string_view name, const ProcessImage& image) const {
-    const auto dot = name.find('.');
-    const auto slot = findVariable(unit_->program, name.substr(0, dot));
-    if (!slot) {
-        return std::nullopt;
-    }
-    const auto& variable = unit_->program.variables[*slot];
-    if (dot == std::string_view::npos) {
-        if (variable.type == DataType::FunctionBlock) {
-            return std::nullopt; // an instance has no single value
+namespace {
+
+// A variable found by path: the instance that holds it, its slot there, and
+// its spelling as declared.
+template <class InstanceType> struct Resolved {
+    InstanceType* instance;
+    std::size_t slot;
+    std::string path;
+};
+
+// Walks "a.b.c" down the instance tree: every part but the last must be a
+// function block instance, and the last must be an elementary variable.
+//
+// A template, so the same code works on a `const Instance` (for reading) and
+// on an `Instance` (for writing).
+template <class InstanceType>
+std::optional<Resolved<InstanceType>> resolvePath(InstanceType& root, std::string_view path) {
+    InstanceType* instance = &root;
+    std::string spelled;
+    for (;;) {
+        const auto dot = path.find('.');
+        const auto slot = findVariable(*instance->type, path.substr(0, dot));
+        if (!slot) {
+            return std::nullopt;
         }
-        return load(*root_, *slot, &image);
+        const auto& variable = instance->type->variables[*slot];
+        spelled += variable.name;
+        const bool last = dot == std::string_view::npos;
+        const bool isInstance = variable.type == DataType::FunctionBlock;
+        if (last) {
+            if (isInstance) {
+                return std::nullopt; // an instance has no single value
+            }
+            return Resolved<InstanceType>{instance, *slot, spelled};
+        }
+        if (!isInstance) {
+            return std::nullopt; // "count.x": count has no members
+        }
+        instance = instance->children[*slot].get();
+        spelled += '.';
+        path.remove_prefix(dot + 1);
     }
-    if (variable.type != DataType::FunctionBlock) {
+}
+
+void collectVariables(const Instance& instance, const std::string& prefix, std::vector<VariableInfo>& out) {
+    const auto& variables = instance.type->variables;
+    for (std::size_t slot = 0; slot < variables.size(); ++slot) {
+        const auto& variable = variables[slot];
+        if (variable.type == DataType::FunctionBlock) {
+            collectVariables(*instance.children[slot], prefix + variable.name + ".", out);
+        } else {
+            out.push_back(VariableInfo{prefix + variable.name, variable.type});
+        }
+    }
+}
+
+} // namespace
+
+std::vector<VariableInfo> Interpreter::variables() const {
+    std::vector<VariableInfo> result;
+    collectVariables(*root_, "", result);
+    return result;
+}
+
+std::optional<VariableInfo> Interpreter::describe(std::string_view path) const {
+    const auto found = resolvePath(std::as_const(*root_), path);
+    if (!found) {
         return std::nullopt;
     }
-    const auto& child = *root_->children[*slot];
-    const auto member = findVariable(*child.type, name.substr(dot + 1));
-    if (!member || child.type->variables[*member].type == DataType::FunctionBlock) {
+    return VariableInfo{found->path, found->instance->type->variables[found->slot].type};
+}
+
+std::optional<Value> Interpreter::valueOf(std::string_view path, const ProcessImage& image) const {
+    const auto found = resolvePath(std::as_const(*root_), path);
+    if (!found) {
         return std::nullopt;
     }
-    return child.values[*member];
+    return load(*found->instance, found->slot, &image);
+}
+
+bool Interpreter::setValue(std::string_view path, const Value& value, ProcessImage& image) {
+    const auto found = resolvePath(*root_, path);
+    if (!found) {
+        return false;
+    }
+    ImageBinding binding(image_, image); // AT variables write to the process image
+    store(*found->instance, found->slot, value);
+    return true;
 }
 
 Value Interpreter::valueOf(std::size_t slot, const ProcessImage& image) const { return load(*root_, slot, &image); }

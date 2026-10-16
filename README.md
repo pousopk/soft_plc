@@ -26,6 +26,16 @@ ctest --test-dir build --output-on-failure
 
 When a program stops (Ctrl+C or a runtime error), `soft_plc` prints the final value of every variable.
 
+### Online monitoring
+
+```bash
+./build/soft_plc --monitor examples/function_blocks.st   # listens on 127.0.0.1:5020 (--monitor=PORT to change)
+./build/soft_plc_monitor                                  # the GUI: watch, write, force and plot variables
+./build/soft_plc_monitor --plot fast.out --plot slow.out  # start with variables in the trend plot
+```
+
+The GUI needs GLFW and OpenGL development files (`libglfw3-dev`, `libgl-dev`); without them the rest still builds. The protocol is one line of text per request, so it can also be used by hand, e.g. `nc 127.0.0.1 5020`, then `READ fast.out`, `FORCE doneLamp TRUE`, `STATUS`. See `src/monitor/monitor_service.hpp` for every command. With `--monitor`, a runtime error leaves the PLC in STOP (instead of exiting) so the monitor can show why.
+
 For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release`.
 
 ## Structured Text supported so far
@@ -45,9 +55,10 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 | `src/core/` | Addresses, process image, program and I/O interfaces, scan cycle |
 | `src/stdlib/` | Standard function blocks in C++: timers, counters, edges, flip-flops |
 | `src/st/` | Structured Text: lexer, syntax tree, parser, analyzer (type checks), interpreter, standard block bridge |
+| `src/monitor/` | Online monitoring: request handling, TCP server and client |
 | `src/demo/` | Demo program and console I/O driver used by `main.cpp` |
 | `src/util/` | Small general-purpose helpers |
-| `tools/` | Command-line tools (`st_parse`) |
+| `tools/` | `st_parse` (command line) and `monitor_gui/` (the `soft_plc_monitor` GUI) |
 | `examples/` | Example Structured Text programs |
 | `tests/` | doctest unit tests, mirroring `src/` |
 | `docs/lessons/` | What each milestone teaches about PLCs and C++, with review questions |

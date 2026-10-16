@@ -22,6 +22,7 @@ add_executable(soft_plc_tests
   st/analyzer_test.cpp
   st/interpreter_test.cpp
   st/st_program_test.cpp
+  monitor/monitor_test.cpp
 )
 target_link_libraries(soft_plc_tests PRIVATE soft_plc_core doctest::doctest fmt::fmt)
 add_test(NAME soft_plc_tests COMMAND soft_plc_tests)

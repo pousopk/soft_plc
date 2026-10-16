@@ -35,6 +35,9 @@ void ScanCycle::run(const std::atomic<bool>& stopRequested) {
             ++stats_.overruns;
             deadline = finished;
         }
+        if (idleTask_) {
+            idleTask_();
+        }
         std::this_thread::sleep_until(deadline);
     }
 }

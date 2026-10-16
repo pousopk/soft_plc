@@ -1,19 +1,26 @@
 // soft_plc: runs a Structured Text program, or the built-in C++ blink demo.
 //
-//   soft_plc                          blink demo
+//   soft_plc                                   blink demo
 //   soft_plc examples/traffic_light.st
+//   soft_plc --monitor examples/function_blocks.st   ... and accept monitoring connections
 #include "core/process_image.hpp"
 #include "core/scan_cycle.hpp"
 #include "demo/blink_program.hpp"
 #include "demo/console_io.hpp"
+#include "monitor/monitor_server.hpp"
+#include "monitor/monitor_service.hpp"
 #include "st/analyzer.hpp"
 #include "st/st_program.hpp"
 #include "util/file.hpp"
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <csignal>
 #include <fmt/format.h>
 #include <memory>
+#include <optional>
+#include <string_view>
+#include <system_error>
 
 namespace {
 
@@ -48,13 +55,47 @@ void printVariables(const softplc::st::Interpreter& interpreter, const softplc::
     }
 }
 
+constexpr std::uint16_t kDefaultMonitorPort = 5020;
+
+struct Options {
+    std::string programPath;          // empty: run the built-in blink demo
+    std::optional<std::uint16_t> monitorPort;
+};
+
+std::optional<Options> parseOptions(int argc, char** argv) {
+    Options options;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        if (arg == "--monitor") {
+            options.monitorPort = kDefaultMonitorPort;
+        } else if (arg.rfind("--monitor=", 0) == 0) {
+            const auto text = arg.substr(std::string_view("--monitor=").size());
+            unsigned port = 0;
+            const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), port);
+            if (ec != std::errc{} || ptr != text.data() + text.size() || port > 65535) {
+                return std::nullopt;
+            }
+            options.monitorPort = static_cast<std::uint16_t>(port);
+        } else if (!arg.empty() && arg.front() != '-' && options.programPath.empty()) {
+            options.programPath = arg;
+        } else {
+            return std::nullopt;
+        }
+    }
+    return options;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     using namespace std::chrono_literals;
 
-    if (argc > 2) {
-        fmt::print(stderr, "usage: soft_plc [program.st]\n");
+    const auto options = parseOptions(argc, argv);
+    if (!options || (options->monitorPort && options->programPath.empty())) {
+        fmt::print(stderr, "usage: soft_plc [--monitor[=PORT]] [program.st]\n"
+                           "  --monitor   accept monitoring connections on 127.0.0.1:{} (or PORT);\n"
+                           "              needs a program file. Connect with soft_plc_monitor.\n",
+                   kDefaultMonitorPort);
         return 2;
     }
 
@@ -65,13 +106,14 @@ int main(int argc, char** argv) {
     softplc::ConsoleIo io(softplc::Clock::now());
 
     std::unique_ptr<softplc::Program> program;
-    const softplc::st::StProgram* stProgram = nullptr;
+    softplc::st::StProgram* stProgram = nullptr;
     std::string source;
+    const bool monitoring = options->monitorPort.has_value();
 
-    if (argc == 2) {
-        auto contents = softplc::readFile(argv[1]);
+    if (!options->programPath.empty()) {
+        auto contents = softplc::readFile(options->programPath);
         if (!contents) {
-            fmt::print(stderr, "cannot open '{}'\n", argv[1]);
+            fmt::print(stderr, "cannot open '{}'\n", options->programPath);
             return 1;
         }
         source = std::move(*contents);
@@ -82,21 +124,39 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        auto onStop = [&source](const softplc::st::RuntimeError& error) {
+        auto onStop = [&source, monitoring](const softplc::st::RuntimeError& error) {
             fmt::print(stderr, "PLC STOP: {}\n",
                        softplc::st::formatDiagnostic({error.message, error.location}, source));
-            stopRequested = true;
+            if (!monitoring) {
+                stopRequested = true; // when monitored, stay up in STOP so the monitor can see why
+            }
         };
         auto st = std::make_unique<softplc::st::StProgram>(std::move(*compiled), onStop);
         stProgram = st.get();
         program = std::move(st);
-        fmt::print("Running program '{}' from {}.\n", stProgram->interpreter().program().name, argv[1]);
+        fmt::print("Running program '{}' from {}.\n", stProgram->interpreter().program().name, options->programPath);
     } else {
         program = std::make_unique<softplc::BlinkProgram>();
         fmt::print("Running the built-in blink demo.\n");
     }
 
     softplc::ScanCycle plc(image, io, *program, 10ms);
+
+    // Monitoring: requests are answered between cycles, on this thread.
+    std::unique_ptr<softplc::monitor::MonitorServer> server;
+    std::unique_ptr<softplc::monitor::MonitorService> service;
+    if (monitoring) {
+        try {
+            server = std::make_unique<softplc::monitor::MonitorServer>(*options->monitorPort);
+        } catch (const std::system_error& error) {
+            fmt::print(stderr, "can't start monitoring on port {}: {}\n", *options->monitorPort, error.what());
+            return 1;
+        }
+        service = std::make_unique<softplc::monitor::MonitorService>(*stProgram, image, plc);
+        plc.setIdleTask([&] { server->processPending([&](std::string_view request) { return service->handle(request); }); });
+        fmt::print("Monitoring on 127.0.0.1:{}.\n", server->port());
+    }
+
     fmt::print("Cycle time 10 ms. Press Ctrl+C to stop.\n");
     plc.run(stopRequested);
 

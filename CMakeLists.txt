@@ -78,6 +78,10 @@ add_library(soft_plc_core STATIC
   src/st/interpreter.cpp
   src/st/st_program.cpp
   src/st/builtins.cpp
+  src/st/value_text.cpp
+  src/monitor/monitor_service.cpp
+  src/monitor/monitor_server.cpp
+  src/monitor/monitor_client.cpp
 )
 target_include_directories(soft_plc_core PUBLIC src)
 target_link_libraries(soft_plc_core
@@ -96,6 +100,57 @@ target_link_libraries(soft_plc PRIVATE soft_plc_core fmt::fmt)
 # --- Tools ---
 add_executable(st_parse tools/st_parse.cpp)
 target_link_libraries(st_parse PRIVATE soft_plc_core fmt::fmt)
+
+# --- Monitoring GUI (optional: needs GLFW and OpenGL) ---
+option(SOFT_PLC_BUILD_GUI "Build the soft_plc_monitor GUI (needs GLFW and OpenGL)" ON)
+if(SOFT_PLC_BUILD_GUI)
+  find_package(glfw3 QUIET)
+  find_package(OpenGL QUIET)
+endif()
+if(SOFT_PLC_BUILD_GUI AND glfw3_FOUND AND OpenGL_FOUND)
+  # Dear ImGui and ImPlot have no CMake support upstream: built as plain static libraries.
+  FetchContent_Declare(
+    imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        v1.92.6
+  )
+  FetchContent_Declare(
+    implot
+    GIT_REPOSITORY https://github.com/epezent/implot.git
+    GIT_TAG        v1.0
+  )
+  FetchContent_MakeAvailable(imgui implot)
+
+  add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
+  )
+  target_include_directories(imgui PUBLIC
+    ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends ${imgui_SOURCE_DIR}/misc/cpp
+  )
+  target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+
+  add_library(implot STATIC ${implot_SOURCE_DIR}/implot.cpp ${implot_SOURCE_DIR}/implot_items.cpp)
+  target_include_directories(implot PUBLIC ${implot_SOURCE_DIR})
+  target_link_libraries(implot PUBLIC imgui)
+
+  soft_plc_mark_system(imgui)
+  soft_plc_mark_system(implot)
+
+  add_executable(soft_plc_monitor
+    tools/monitor_gui/main.cpp
+    tools/monitor_gui/poller.cpp
+    tools/monitor_gui/monitor_window.cpp
+  )
+  target_link_libraries(soft_plc_monitor PRIVATE soft_plc_core implot imgui fmt::fmt)
+elseif(SOFT_PLC_BUILD_GUI)
+  message(STATUS "soft_plc_monitor GUI not built: GLFW or OpenGL development files not found")
+endif()
 
 enable_testing()
 add_subdirectory(tests)

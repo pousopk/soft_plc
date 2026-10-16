@@ -5,6 +5,7 @@
 #include "core/program.hpp"
 #include <atomic>
 #include <cstdint>
+#include <functional>
 
 namespace softplc {
 
@@ -39,6 +40,11 @@ public:
     // Runs cycles until `stopRequested` becomes true.
     void run(const std::atomic<bool>& stopRequested);
 
+    // Work to do after every cycle, in the time left before the next one, on
+    // the scan cycle's own thread. Real PLCs answer communication requests
+    // the same way, between cycles, so the program never sees half a change.
+    void setIdleTask(std::function<void()> task) { idleTask_ = std::move(task); }
+
     const CycleStats& stats() const { return stats_; }
     Duration cycleTime() const { return cycleTime_; }
 
@@ -48,6 +54,7 @@ private:
     Program& program_;
     Duration cycleTime_;
     CycleStats stats_;
+    std::function<void()> idleTask_;
 };
 
 } // namespace softplc
