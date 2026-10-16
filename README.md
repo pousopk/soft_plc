@@ -17,6 +17,8 @@ cmake -S . -B build                 # Debug by default, with AddressSanitizer + 
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ./build/soft_plc                    # demo: blinks %QX0.0 every 500 ms; Ctrl+C to stop
+./build/st_parse examples/expressions.st     # show how Structured Text is parsed
+./build/st_parse -e "a := b + 3 * c;"
 ```
 
 For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release`.
@@ -27,6 +29,11 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 |---|---|
 | `src/core/` | Addresses, process image, program and I/O interfaces, scan cycle |
 | `src/stdlib/` | Standard function blocks (TON so far) |
+| `src/st/` | Structured Text: tokens, lexer, syntax tree (AST), parser, error messages |
+| `src/util/` | Small general-purpose helpers |
+| `tools/` | Command-line tools (`st_parse`) |
+| `examples/` | Example Structured Text files |
+| `docs/lessons/` | What each milestone teaches about PLCs and C++, with review questions |
 | `src/demo/` | Demo program and console I/O driver used by `main.cpp` |
 | `tests/` | doctest unit tests, mirroring `src/` |
 ## Components

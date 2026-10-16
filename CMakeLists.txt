@@ -69,6 +69,10 @@ add_library(soft_plc_core STATIC
   src/core/process_image.cpp
   src/core/scan_cycle.cpp
   src/stdlib/ton.cpp
+  src/st/diagnostic.cpp
+  src/st/lexer.cpp
+  src/st/ast.cpp
+  src/st/parser.cpp
 )
 target_include_directories(soft_plc_core PUBLIC src)
 target_link_libraries(soft_plc_core
@@ -83,6 +87,10 @@ add_executable(soft_plc
   src/demo/console_io.cpp
 )
 target_link_libraries(soft_plc PRIVATE soft_plc_core fmt::fmt)
+
+# --- Tools ---
+add_executable(st_parse tools/st_parse.cpp)
+target_link_libraries(st_parse PRIVATE soft_plc_core fmt::fmt)
 
 enable_testing()
 add_subdirectory(tests)

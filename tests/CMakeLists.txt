@@ -12,6 +12,9 @@ add_executable(soft_plc_tests
   core/process_image_test.cpp
   core/scan_cycle_test.cpp
   stdlib/ton_test.cpp
+  st/lexer_test.cpp
+  st/parser_test.cpp
+  st/diagnostic_test.cpp
 )
-target_link_libraries(soft_plc_tests PRIVATE soft_plc_core doctest::doctest)
+target_link_libraries(soft_plc_tests PRIVATE soft_plc_core doctest::doctest fmt::fmt)
 add_test(NAME soft_plc_tests COMMAND soft_plc_tests)
