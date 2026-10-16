@@ -1,12 +1,16 @@
 // st_parse: shows how the parser understands Structured Text.
 //
-//   st_parse examples/expressions.st
+//   st_parse examples/traffic_light.st      a whole PROGRAM ... END_PROGRAM
+//   st_parse examples/expressions.st        statements on their own
 //   st_parse -e "a := b + 3 * c;"
+//
+// For a PROGRAM it also runs the analyzer, so type errors are reported too.
+#include "st/analyzer.hpp"
 #include "st/ast.hpp"
+#include "st/lexer.hpp"
 #include "st/parser.hpp"
+#include "util/file.hpp"
 #include <fmt/format.h>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <string_view>
 
@@ -17,6 +21,16 @@ int usage() {
     return 2;
 }
 
+int reportError(const softplc::st::Diagnostic& diagnostic, std::string_view source) {
+    fmt::print(stderr, "error: {}\n", softplc::st::formatDiagnostic(diagnostic, source));
+    return 1;
+}
+
+bool startsWithProgram(std::string_view source) {
+    const auto tokens = softplc::st::tokenize(source);
+    return tokens && tokens->front().kind == softplc::st::TokenKind::Program;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -24,26 +38,30 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::string_view(argv[1]) == "-e") {
         source = argv[2];
     } else if (argc == 2) {
-        std::ifstream file(argv[1]);
-        if (!file) {
+        auto contents = softplc::readFile(argv[1]);
+        if (!contents) {
             fmt::print(stderr, "cannot open '{}'\n", argv[1]);
             return 1;
         }
-        std::ostringstream contents;
-        contents << file.rdbuf();
-        source = contents.str();
+        source = std::move(*contents);
     } else {
         return usage();
     }
 
-    const auto statements = softplc::st::parseStatements(source);
-    if (!statements) {
-        fmt::print(stderr, "error: {}\n", softplc::st::formatDiagnostic(statements.error(), source));
-        return 1;
+    if (startsWithProgram(source)) {
+        const auto program = softplc::st::compileProgram(source);
+        if (!program) {
+            return reportError(program.error(), source);
+        }
+        fmt::print("{}", softplc::st::dumpTree(*program));
+        return 0;
     }
 
+    const auto statements = softplc::st::parseStatements(source);
+    if (!statements) {
+        return reportError(statements.error(), source);
+    }
     for (const auto& statement : *statements) {
-        fmt::print("{} := {};\n", statement.target, softplc::st::formatExpression(*statement.value));
         fmt::print("{}\n", softplc::st::dumpTree(statement));
     }
     return 0;

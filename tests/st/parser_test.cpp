@@ -15,6 +15,10 @@ std::string grouped(std::string_view source) {
     return formatExpression(**expression);
 }
 
+const Assignment& assignmentAt(const StatementList& list, std::size_t index) {
+    return std::get<Assignment>(list.at(index).node);
+}
+
 } // namespace
 
 TEST_CASE("Literals and variables") {
@@ -65,10 +69,10 @@ TEST_CASE("parseStatements reads a sequence of assignments") {
     auto statements = parseStatements("a := 1;\n b := a + 2;");
     REQUIRE(statements.has_value());
     REQUIRE(statements->size() == 2);
-    CHECK((*statements)[0].target == "a");
-    CHECK(formatExpression(*(*statements)[0].value) == "1");
-    CHECK((*statements)[1].target == "b");
-    CHECK(formatExpression(*(*statements)[1].value) == "(a + 2)");
+    CHECK(assignmentAt(*statements, 0).target == "a");
+    CHECK(formatExpression(*assignmentAt(*statements, 0).value) == "1");
+    CHECK(assignmentAt(*statements, 1).target == "b");
+    CHECK(formatExpression(*assignmentAt(*statements, 1).value) == "(a + 2)");
     CHECK((*statements)[1].location == SourceLocation{2, 2});
 }
 
@@ -101,7 +105,7 @@ TEST_CASE("Syntax errors report what was expected and where") {
         {"a := (b + c;", "expected ')' to close the '('", {1, 12}},
         {"a := b", "expected ';' at the end of the statement, found end of input", {1, 7}},
         {"a + b;", "expected ':=' after 'a'", {1, 3}},
-        {"5 := a;", "expected a variable name", {1, 1}},
+        {"5 := a;", "expected a statement, found '5'", {1, 1}},
         {"a := 1;\nb := 2 3;", "expected ';'", {2, 8}},
         {"a := $;", "unexpected character", {1, 6}}, // lexer errors come through too
     };

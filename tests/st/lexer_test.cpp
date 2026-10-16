@@ -53,6 +53,32 @@ TEST_CASE("Keywords are case-insensitive; other names are identifiers") {
           std::vector{K::Identifier, K::Identifier, K::Identifier, K::EndOfFile});
 }
 
+TEST_CASE("Statement and declaration keywords are recognised in any case") {
+    using K = TokenKind;
+    CHECK(kindsOf("PROGRAM end_program Var END_VAR at") ==
+          std::vector{K::Program, K::EndProgram, K::Var, K::EndVar, K::At, K::EndOfFile});
+    CHECK(kindsOf("IF THEN ELSIF ELSE END_IF CASE OF END_CASE") ==
+          std::vector{K::If, K::Then, K::Elsif, K::Else, K::EndIf, K::Case, K::Of, K::EndCase, K::EndOfFile});
+    CHECK(kindsOf("FOR TO BY DO END_FOR WHILE END_WHILE REPEAT UNTIL END_REPEAT EXIT RETURN") ==
+          std::vector{K::For, K::To, K::By, K::Do, K::EndFor, K::While, K::EndWhile, K::Repeat, K::Until,
+                      K::EndRepeat, K::Exit, K::Return, K::EndOfFile});
+}
+
+TEST_CASE("Colon, comma and range symbols") {
+    using K = TokenKind;
+    CHECK(kindsOf("x : INT;") == std::vector{K::Identifier, K::Colon, K::Identifier, K::Semicolon, K::EndOfFile});
+    CHECK(kindsOf("1, 2..5:") ==
+          std::vector{K::Integer, K::Comma, K::Integer, K::DotDot, K::Integer, K::Colon, K::EndOfFile});
+}
+
+TEST_CASE("Direct addresses are parsed into an Address") {
+    const auto token = single("%QX0.3");
+    CHECK(token.kind == TokenKind::DirectAddress);
+    CHECK(std::get<softplc::Address>(token.value) ==
+          softplc::Address{softplc::Area::Output, softplc::AccessSize::Bit, 0, 3});
+    CHECK(std::get<softplc::Address>(single("%MW10").value).size == softplc::AccessSize::Word);
+}
+
 TEST_CASE("Identifiers keep their original spelling") {
     CHECK(single("MotorSpeed").text == "MotorSpeed");
 }
@@ -98,7 +124,9 @@ TEST_CASE("Lexical errors report what went wrong and where") {
     };
     const Case cases[] = {
         {"a := $;", "unexpected character '$'", {1, 6}},
-        {"a : 1;", "did you mean ':='", {1, 3}},
+        {"x := a.b;", "unexpected '.'", {1, 7}},
+        {"x AT %Z0.0", "area must be I, Q or M", {1, 6}},
+        {"x AT %IX0.9", "bit number must be 0-7", {1, 6}},
         {"(* never closed", "never closed", {1, 1}},
         {"x := 12abc;", "invalid number", {1, 6}},
         {"x := 3#12;", "base must be 2, 8 or 16", {1, 6}},

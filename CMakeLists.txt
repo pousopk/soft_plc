@@ -73,6 +73,9 @@ add_library(soft_plc_core STATIC
   src/st/lexer.cpp
   src/st/ast.cpp
   src/st/parser.cpp
+  src/st/analyzer.cpp
+  src/st/interpreter.cpp
+  src/st/st_program.cpp
 )
 target_include_directories(soft_plc_core PUBLIC src)
 target_link_libraries(soft_plc_core

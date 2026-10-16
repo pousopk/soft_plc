@@ -1,4 +1,5 @@
 #include "st/lexer.hpp"
+#include "util/text.hpp"
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -11,10 +12,14 @@ const char* tokenKindName(TokenKind kind) {
     case TokenKind::Identifier: return "identifier";
     case TokenKind::Integer: return "integer";
     case TokenKind::Real: return "real number";
+    case TokenKind::DirectAddress: return "address";
     case TokenKind::True: return "'TRUE'";
     case TokenKind::False: return "'FALSE'";
     case TokenKind::Assign: return "':='";
     case TokenKind::Semicolon: return "';'";
+    case TokenKind::Colon: return "':'";
+    case TokenKind::Comma: return "','";
+    case TokenKind::DotDot: return "'..'";
     case TokenKind::LeftParen: return "'('";
     case TokenKind::RightParen: return "')'";
     case TokenKind::Plus: return "'+'";
@@ -33,12 +38,57 @@ const char* tokenKindName(TokenKind kind) {
     case TokenKind::LessEqual: return "'<='";
     case TokenKind::Greater: return "'>'";
     case TokenKind::GreaterEqual: return "'>='";
+    case TokenKind::Program: return "'PROGRAM'";
+    case TokenKind::EndProgram: return "'END_PROGRAM'";
+    case TokenKind::Var: return "'VAR'";
+    case TokenKind::EndVar: return "'END_VAR'";
+    case TokenKind::At: return "'AT'";
+    case TokenKind::If: return "'IF'";
+    case TokenKind::Then: return "'THEN'";
+    case TokenKind::Elsif: return "'ELSIF'";
+    case TokenKind::Else: return "'ELSE'";
+    case TokenKind::EndIf: return "'END_IF'";
+    case TokenKind::Case: return "'CASE'";
+    case TokenKind::Of: return "'OF'";
+    case TokenKind::EndCase: return "'END_CASE'";
+    case TokenKind::For: return "'FOR'";
+    case TokenKind::To: return "'TO'";
+    case TokenKind::By: return "'BY'";
+    case TokenKind::Do: return "'DO'";
+    case TokenKind::EndFor: return "'END_FOR'";
+    case TokenKind::While: return "'WHILE'";
+    case TokenKind::EndWhile: return "'END_WHILE'";
+    case TokenKind::Repeat: return "'REPEAT'";
+    case TokenKind::Until: return "'UNTIL'";
+    case TokenKind::EndRepeat: return "'END_REPEAT'";
+    case TokenKind::Exit: return "'EXIT'";
+    case TokenKind::Return: return "'RETURN'";
     case TokenKind::EndOfFile: return "end of input";
     }
     return "token";
 }
 
 namespace {
+
+// Every keyword, in upper case. A name that isn't in this table is an identifier.
+constexpr std::pair<std::string_view, TokenKind> keywords[] = {
+    {"TRUE", TokenKind::True},       {"FALSE", TokenKind::False},
+    {"MOD", TokenKind::Mod},         {"AND", TokenKind::And},
+    {"OR", TokenKind::Or},           {"XOR", TokenKind::Xor},
+    {"NOT", TokenKind::Not},         {"PROGRAM", TokenKind::Program},
+    {"END_PROGRAM", TokenKind::EndProgram}, {"VAR", TokenKind::Var},
+    {"END_VAR", TokenKind::EndVar},  {"AT", TokenKind::At},
+    {"IF", TokenKind::If},           {"THEN", TokenKind::Then},
+    {"ELSIF", TokenKind::Elsif},     {"ELSE", TokenKind::Else},
+    {"END_IF", TokenKind::EndIf},    {"CASE", TokenKind::Case},
+    {"OF", TokenKind::Of},           {"END_CASE", TokenKind::EndCase},
+    {"FOR", TokenKind::For},         {"TO", TokenKind::To},
+    {"BY", TokenKind::By},           {"DO", TokenKind::Do},
+    {"END_FOR", TokenKind::EndFor},  {"WHILE", TokenKind::While},
+    {"END_WHILE", TokenKind::EndWhile}, {"REPEAT", TokenKind::Repeat},
+    {"UNTIL", TokenKind::Until},     {"END_REPEAT", TokenKind::EndRepeat},
+    {"EXIT", TokenKind::Exit},       {"RETURN", TokenKind::Return},
+};
 
 // Thrown inside the lexer to abort on the first error; tokenize() catches it
 // and turns it into the tl::expected error. Callers never see the exception.
@@ -49,13 +99,6 @@ struct LexError {
 bool isDigit(char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; }
 bool isIdentifierStart(char c) { return std::isalpha(static_cast<unsigned char>(c)) != 0 || c == '_'; }
 bool isIdentifierChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; }
-
-std::string toUpper(std::string_view text) {
-    std::string upper(text);
-    std::transform(upper.begin(), upper.end(), upper.begin(),
-                   [](char c) { return static_cast<char>(std::toupper(static_cast<unsigned char>(c))); });
-    return upper;
-}
 
 std::string withoutUnderscores(std::string_view text) {
     std::string result;
@@ -136,6 +179,9 @@ private:
         if (isIdentifierStart(c)) {
             return identifierOrKeyword();
         }
+        if (c == '%') {
+            return directAddress();
+        }
         return symbol();
     }
 
@@ -149,15 +195,29 @@ private:
 
         const auto upper = toUpper(text);
         auto kind = TokenKind::Identifier;
-        if (upper == "TRUE") kind = TokenKind::True;
-        else if (upper == "FALSE") kind = TokenKind::False;
-        else if (upper == "MOD") kind = TokenKind::Mod;
-        else if (upper == "AND") kind = TokenKind::And;
-        else if (upper == "OR") kind = TokenKind::Or;
-        else if (upper == "XOR") kind = TokenKind::Xor;
-        else if (upper == "NOT") kind = TokenKind::Not;
-
+        for (const auto& [keyword, keywordKind] : keywords) {
+            if (upper == keyword) {
+                kind = keywordKind;
+                break;
+            }
+        }
         return Token{kind, std::move(text), start, {}};
+    }
+
+    // %IX0.0, %QB1, %MW10 ... validated with the same parser as the rest of the PLC.
+    Token directAddress() {
+        const auto start = location_;
+        const auto begin = pos_;
+        advance(); // '%'
+        while (isIdentifierChar(peek()) || peek() == '.') {
+            advance();
+        }
+        std::string text(source_.substr(begin, pos_ - begin));
+        auto address = parseAddress(text);
+        if (!address) {
+            fail(start, address.error());
+        }
+        return Token{TokenKind::DirectAddress, std::move(text), start, *address};
     }
 
     // Reads 42, 1_000, 16#FF, 2#1010_0101, 3.14 or 1.5E-3.
@@ -263,6 +323,13 @@ private:
 
         switch (c) {
         case ';': return make(TokenKind::Semicolon, ";");
+        case ',': return make(TokenKind::Comma, ",");
+        case '.':
+            if (peek() == '.') {
+                advance();
+                return make(TokenKind::DotDot, "..");
+            }
+            fail(start, "unexpected '.'");
         case '(': return make(TokenKind::LeftParen, "(");
         case ')': return make(TokenKind::RightParen, ")");
         case '+': return make(TokenKind::Plus, "+");
@@ -281,7 +348,7 @@ private:
                 advance();
                 return make(TokenKind::Assign, ":=");
             }
-            fail(start, "unexpected ':' (did you mean ':='?)");
+            return make(TokenKind::Colon, ":");
         case '<':
             if (peek() == '=') {
                 advance();
