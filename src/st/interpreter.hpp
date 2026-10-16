@@ -2,12 +2,14 @@
 #include "core/plc_time.hpp"
 #include "core/process_image.hpp"
 #include "st/ast.hpp"
+#include "st/bytecode.hpp"
 #include "st/diagnostic.hpp"
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace softplc::st {
@@ -23,6 +25,21 @@ struct RuntimeError {
 struct VariableInfo {
     std::string path; // "count", "fast.out", "fast.offTimer.ET", spelled as declared
     DataType type;
+};
+
+// How the program's code is run. Both give exactly the same results.
+enum class Engine {
+    TreeWalker, // walk the syntax tree directly (milestone 3)
+    Bytecode,   // compile to bytecode once, then run it on a stack VM (milestone 7)
+};
+
+const char* engineName(Engine engine); // "tree", "bytecode"
+
+// One slot of the VM's stack: an integer (also BOOL 0/1 and TIME in ms) or a
+// REAL. Untagged: the compiler always knows which one is in use.
+union VmSlot {
+    std::int64_t i;
+    double r;
 };
 
 // The memory of one PROGRAM or function block instance. Defined in
@@ -43,7 +60,7 @@ class Interpreter {
 public:
     // `unit` must have passed analyze(). The interpreter takes ownership.
     // `loopLimit` is the watchdog: the most loop iterations allowed per cycle.
-    explicit Interpreter(CompilationUnit unit, std::uint64_t loopLimit = 1'000'000);
+    explicit Interpreter(CompilationUnit unit, std::uint64_t loopLimit = 1'000'000, Engine engine = Engine::Bytecode);
 
     // Declared here, defined in the .cpp where Instance is complete: a
     // unique_ptr can only delete a type the compiler fully knows.
@@ -77,6 +94,10 @@ public:
     Value valueOf(std::size_t slot, const ProcessImage& image) const;
 
     const Pou& program() const { return unit_->program; }
+    Engine engine() const { return engine_; }
+
+    // The bytecode of a POU (only with Engine::Bytecode), e.g. for st_parse --bytecode.
+    const Chunk* bytecode(const Pou& pou) const;
 
 private:
     // What a statement asks its enclosing statements to do next.
@@ -102,6 +123,9 @@ private:
 
     void countLoopIteration(SourceLocation where);
 
+    // The bytecode VM: runs one POU's compiled code on `self`.
+    void runBytecode(const Chunk& chunk, Instance& self);
+
     // On the heap, so that the instances' pointers into it stay valid when
     // the Interpreter itself is moved.
     std::unique_ptr<CompilationUnit> unit_;
@@ -110,6 +134,13 @@ private:
     std::uint64_t loopIterations_ = 0;
     ProcessImage* image_ = nullptr; // only set while runCycle() runs
     TimePoint now_{};
+
+    Engine engine_;
+    std::unordered_map<const Pou*, Chunk> chunks_; // compiled code, per POU (Bytecode engine)
+    // The VM's stack, shared by nested function block calls: each call uses
+    // the part above its caller's. Fixed size, so pointers into it stay valid.
+    std::vector<VmSlot> vmStack_;
+    std::size_t vmTop_ = 0;
 };
 
 } // namespace softplc::st

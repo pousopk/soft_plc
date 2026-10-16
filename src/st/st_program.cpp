@@ -4,8 +4,8 @@
 
 namespace softplc::st {
 
-StProgram::StProgram(CompilationUnit unit, StopHandler onStop, std::uint64_t loopLimit)
-    : interpreter_(std::move(unit), loopLimit), onStop_(std::move(onStop)) {}
+StProgram::StProgram(CompilationUnit unit, StopHandler onStop, std::uint64_t loopLimit, Engine engine)
+    : interpreter_(std::move(unit), loopLimit, engine), onStop_(std::move(onStop)) {}
 
 void StProgram::execute(ProcessImage& image, const CycleContext& context) {
     if (stopped()) {

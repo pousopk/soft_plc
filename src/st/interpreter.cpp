@@ -1,5 +1,7 @@
 #include "st/interpreter.hpp"
 #include "st/builtins.hpp"
+#include "st/compiler.hpp"
+#include "st/runtime_values.hpp"
 #include "util/overloaded.hpp"
 #include "util/text.hpp"
 #include <bit>
@@ -25,63 +27,7 @@ struct Instance {
 
 namespace {
 
-// --- Converting values to the shape of their type ---
-
-std::int64_t toInteger(const Value& value) { return std::get<std::int64_t>(value); }
-
-double toReal(const Value& value) {
-    if (const auto* i = std::get_if<std::int64_t>(&value)) {
-        return static_cast<double>(*i);
-    }
-    return std::get<double>(value);
-}
-
-// REAL is a 32-bit float: values are held in a double, but rounded to float
-// precision after every operation so results match a real PLC.
-double roundToReal(double value) { return static_cast<double>(static_cast<float>(value)); }
-
-// Brings an integer into its type's range by wrapping around, exactly like a
-// PLC does: INT 32767 + 1 gives -32768. Since C++20, converting to a smaller
-// signed type is guaranteed to wrap this way.
-std::int64_t wrapInteger(std::int64_t value, DataType type) {
-    switch (type) {
-    case DataType::Int: return static_cast<std::int16_t>(value);
-    case DataType::DInt:
-    case DataType::Time: return static_cast<std::int32_t>(value);
-    default: return value; // AnyInt: a plain 64-bit calculation of literals
-    }
-}
-
-// Converts a value to the given type, for storing in a variable.
-Value convert(const Value& value, DataType type) {
-    switch (type) {
-    case DataType::Bool: return std::get<bool>(value);
-    case DataType::Real: return roundToReal(toReal(value));
-    default: return wrapInteger(toInteger(value), type);
-    }
-}
-
-Value defaultValue(DataType type) {
-    switch (type) {
-    case DataType::Bool: return false;
-    case DataType::Real: return 0.0;
-    default: return std::int64_t{0};
-    }
-}
-
-// --- 64-bit integer arithmetic without undefined behaviour ---
-// Signed overflow is undefined behaviour in C++, so + - * are done on
-// unsigned numbers (which wrap) and converted back.
-
-std::int64_t add(std::int64_t a, std::int64_t b) {
-    return static_cast<std::int64_t>(static_cast<std::uint64_t>(a) + static_cast<std::uint64_t>(b));
-}
-std::int64_t subtract(std::int64_t a, std::int64_t b) {
-    return static_cast<std::int64_t>(static_cast<std::uint64_t>(a) - static_cast<std::uint64_t>(b));
-}
-std::int64_t multiply(std::int64_t a, std::int64_t b) {
-    return static_cast<std::int64_t>(static_cast<std::uint64_t>(a) * static_cast<std::uint64_t>(b));
-}
+using namespace runtime;
 
 // Applies a comparison to two values of the same kind (bools, integers or reals).
 template <class T> bool compare(BinaryOperator op, T a, T b) {
@@ -127,9 +73,24 @@ private:
 
 } // namespace
 
-Interpreter::Interpreter(CompilationUnit unit, std::uint64_t loopLimit)
-    : unit_(std::make_unique<CompilationUnit>(std::move(unit))), loopLimit_(loopLimit) {
+const char* engineName(Engine engine) { return engine == Engine::TreeWalker ? "tree" : "bytecode"; }
+
+Interpreter::Interpreter(CompilationUnit unit, std::uint64_t loopLimit, Engine engine)
+    : unit_(std::make_unique<CompilationUnit>(std::move(unit))), loopLimit_(loopLimit), engine_(engine) {
+    if (engine_ == Engine::Bytecode) {
+        // Compile every POU once, up front: cycles then only run the bytecode.
+        chunks_.emplace(&unit_->program, compile(unit_->program));
+        for (const auto& functionBlock : unit_->functionBlocks) {
+            chunks_.emplace(&functionBlock, compile(functionBlock));
+        }
+        vmStack_.resize(16 * 1024);
+    }
     root_ = createInstance(unit_->program);
+}
+
+const Chunk* Interpreter::bytecode(const Pou& pou) const {
+    const auto it = chunks_.find(&pou);
+    return it == chunks_.end() ? nullptr : &it->second;
 }
 
 Interpreter::~Interpreter() = default;
@@ -174,6 +135,8 @@ void Interpreter::runCycle(ProcessImage& image, TimePoint now) {
 void Interpreter::run(Instance& instance) {
     if (instance.native) {
         instance.native->execute(instance.values, now_);
+    } else if (engine_ == Engine::Bytecode) {
+        runBytecode(chunks_.at(instance.type), instance);
     } else {
         execute(instance.type->body, instance); // a RETURN just ends this run early
     }
@@ -417,6 +380,166 @@ void Interpreter::countLoopIteration(SourceLocation where) {
     }
 }
 
+// ---------------------------------------------------------------- The bytecode VM
+
+namespace {
+
+VmSlot toSlot(const Value& value) {
+    VmSlot slot{};
+    if (const auto* b = std::get_if<bool>(&value)) {
+        slot.i = *b ? 1 : 0;
+    } else if (const auto* i = std::get_if<std::int64_t>(&value)) {
+        slot.i = *i;
+    } else {
+        slot.r = std::get<double>(value);
+    }
+    return slot;
+}
+
+Value fromSlot(VmSlot slot, DataType type) {
+    switch (type) {
+    case DataType::Bool: return slot.i != 0;
+    case DataType::Real: return slot.r;
+    default: return slot.i;
+    }
+}
+
+} // namespace
+
+// The heart of the VM: fetch an instruction, do what it says, repeat. `sp`
+// points just past the top of the operand stack; `temps` are the compiler's
+// scratch slots. Everything is checked by the analyzer and laid out by the
+// compiler beforehand, so this loop does no type checks and no name lookups.
+void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
+    const std::size_t frameSize = chunk.temps + chunk.maxStack;
+    if (vmTop_ + frameSize > vmStack_.size()) {
+        throw RuntimeError{"VM stack overflow: function blocks nested too deeply", {}};
+    }
+    VmSlot* const temps = vmStack_.data() + vmTop_;
+    VmSlot* sp = temps + chunk.temps;
+
+    // Reserve this frame; nested calls build theirs above it. The guard gives
+    // the space back on every way out, exceptions included (RAII).
+    struct FrameGuard {
+        std::size_t& top;
+        std::size_t saved;
+        ~FrameGuard() { top = saved; }
+    } guard{vmTop_, vmTop_};
+    vmTop_ += frameSize;
+
+    auto& values = self.values;
+    const Instruction* const code = chunk.code.data();
+    std::size_t pc = 0;
+    const auto where = [&] { return chunk.locations[pc - 1]; }; // location of the current instruction
+
+    for (;;) {
+        const Instruction& in = code[pc++];
+        switch (in.op) {
+        case Op::PushInt: (sp++)->i = in.imm; break;
+        case Op::PushReal: (sp++)->r = std::bit_cast<double>(in.imm); break;
+
+        case Op::LoadBool: (sp++)->i = std::get<bool>(values[in.a]) ? 1 : 0; break;
+        case Op::LoadInt: (sp++)->i = std::get<std::int64_t>(values[in.a]); break;
+        case Op::LoadReal: (sp++)->r = std::get<double>(values[in.a]); break;
+        case Op::StoreBool: values[in.a] = (--sp)->i != 0; break;
+        case Op::StoreInt16: values[in.a] = std::int64_t{static_cast<std::int16_t>((--sp)->i)}; break;
+        case Op::StoreInt32: values[in.a] = std::int64_t{static_cast<std::int32_t>((--sp)->i)}; break;
+        case Op::StoreReal: values[in.a] = roundToReal((--sp)->r); break;
+        case Op::LoadAt: *sp++ = toSlot(load(self, in.a, image_)); break;
+        case Op::StoreAt: {
+            const std::size_t slot = in.a;
+            --sp;
+            store(self, slot, fromSlot(*sp, self.type->variables[slot].type));
+            break;
+        }
+
+        case Op::LoadMemberBool: (sp++)->i = std::get<bool>(self.children[in.a]->values[in.b]) ? 1 : 0; break;
+        case Op::LoadMemberInt: (sp++)->i = std::get<std::int64_t>(self.children[in.a]->values[in.b]); break;
+        case Op::LoadMemberReal: (sp++)->r = std::get<double>(self.children[in.a]->values[in.b]); break;
+        case Op::StoreMemberBool: self.children[in.a]->values[in.b] = (--sp)->i != 0; break;
+        case Op::StoreMemberInt16:
+            self.children[in.a]->values[in.b] = std::int64_t{static_cast<std::int16_t>((--sp)->i)};
+            break;
+        case Op::StoreMemberInt32:
+            self.children[in.a]->values[in.b] = std::int64_t{static_cast<std::int32_t>((--sp)->i)};
+            break;
+        case Op::StoreMemberReal: self.children[in.a]->values[in.b] = roundToReal((--sp)->r); break;
+
+        case Op::LoadTemp: *sp++ = temps[in.a]; break;
+        case Op::StoreTemp: temps[in.a] = *--sp; break;
+
+        case Op::AddI: --sp; sp[-1].i = add(sp[-1].i, sp->i); break;
+        case Op::SubI: --sp; sp[-1].i = subtract(sp[-1].i, sp->i); break;
+        case Op::MulI: --sp; sp[-1].i = multiply(sp[-1].i, sp->i); break;
+        case Op::DivI:
+        case Op::ModI:
+            --sp;
+            if (sp->i == 0) {
+                throw RuntimeError{"division by zero", where()};
+            }
+            sp[-1].i = in.op == Op::DivI ? divide(sp[-1].i, sp->i) : modulo(sp[-1].i, sp->i);
+            break;
+        case Op::NegI: sp[-1].i = subtract(0, sp[-1].i); break;
+        case Op::Wrap16: sp[-1].i = static_cast<std::int16_t>(sp[-1].i); break;
+        case Op::Wrap32: sp[-1].i = static_cast<std::int32_t>(sp[-1].i); break;
+
+        case Op::AddR: --sp; sp[-1].r = roundToReal(sp[-1].r + sp->r); break;
+        case Op::SubR: --sp; sp[-1].r = roundToReal(sp[-1].r - sp->r); break;
+        case Op::MulR: --sp; sp[-1].r = roundToReal(sp[-1].r * sp->r); break;
+        case Op::DivR: --sp; sp[-1].r = roundToReal(sp[-1].r / sp->r); break;
+        case Op::PowR: --sp; sp[-1].r = roundToReal(std::pow(sp[-1].r, sp->r)); break;
+        case Op::NegR: sp[-1].r = -sp[-1].r; break;
+        case Op::IntToReal: sp[-1].r = static_cast<double>(sp[-1].i); break;
+
+        case Op::EqI: --sp; sp[-1].i = sp[-1].i == sp->i; break;
+        case Op::NeI: --sp; sp[-1].i = sp[-1].i != sp->i; break;
+        case Op::LtI: --sp; sp[-1].i = sp[-1].i < sp->i; break;
+        case Op::LeI: --sp; sp[-1].i = sp[-1].i <= sp->i; break;
+        case Op::GtI: --sp; sp[-1].i = sp[-1].i > sp->i; break;
+        case Op::GeI: --sp; sp[-1].i = sp[-1].i >= sp->i; break;
+        case Op::EqR: --sp; sp[-1].i = sp[-1].r == sp->r; break;
+        case Op::NeR: --sp; sp[-1].i = sp[-1].r != sp->r; break;
+        case Op::LtR: --sp; sp[-1].i = sp[-1].r < sp->r; break;
+        case Op::LeR: --sp; sp[-1].i = sp[-1].r <= sp->r; break;
+        case Op::GtR: --sp; sp[-1].i = sp[-1].r > sp->r; break;
+        case Op::GeR: --sp; sp[-1].i = sp[-1].r >= sp->r; break;
+        case Op::EqB: --sp; sp[-1].i = (sp[-1].i != 0) == (sp->i != 0); break;
+        case Op::NeB: --sp; sp[-1].i = (sp[-1].i != 0) != (sp->i != 0); break;
+
+        case Op::And: --sp; sp[-1].i = sp[-1].i != 0 && sp->i != 0; break;
+        case Op::Or: --sp; sp[-1].i = sp[-1].i != 0 || sp->i != 0; break;
+        case Op::Xor: --sp; sp[-1].i = (sp[-1].i != 0) != (sp->i != 0); break;
+        case Op::Not: sp[-1].i = sp[-1].i == 0; break;
+
+        case Op::Jump: pc = in.a; break;
+        case Op::JumpIfFalse:
+            if ((--sp)->i == 0) {
+                pc = in.a;
+            }
+            break;
+        case Op::JumpIfTrue:
+            if ((--sp)->i != 0) {
+                pc = in.a;
+            }
+            break;
+        case Op::LoopTick: countLoopIteration(where()); break;
+        case Op::ForTest: {
+            const auto value = sp[-1].i;
+            const auto to = temps[in.a].i;
+            sp[-1].i = temps[in.b].i > 0 ? value <= to : value >= to;
+            break;
+        }
+        case Op::CheckStep:
+            if (temps[in.a].i == 0) {
+                throw RuntimeError{"FOR loop with BY 0 would never end", where()};
+            }
+            break;
+        case Op::Call: run(*self.children[in.a]); break;
+        case Op::Return: return;
+        }
+    }
+}
+
 // ---------------------------------------------------------------- Expressions
 
 Value Interpreter::evaluate(const Expression& expression, Instance& self) {
@@ -484,11 +607,7 @@ Value Interpreter::evaluateBinary(const BinaryExpression& binary, const Expressi
         if (b == 0) {
             throw RuntimeError{"division by zero", expression.location};
         }
-        if (b == -1) { // avoids the one overflowing case, INT64_MIN / -1
-            return binary.op == BinaryOperator::Divide ? wrapInteger(subtract(0, a), type) : std::int64_t{0};
-        }
-        // C++ rounds integer division towards zero, like IEC: -7 / 2 = -3 and -7 MOD 2 = -1.
-        return wrapInteger(binary.op == BinaryOperator::Divide ? a / b : a % b, type);
+        return wrapInteger(binary.op == BinaryOperator::Divide ? divide(a, b) : modulo(a, b), type);
     default: break;
     }
     throw RuntimeError{fmt::format("operator '{}' is not supported here", operatorSymbol(binary.op)),

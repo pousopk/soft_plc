@@ -3,6 +3,7 @@
 #include "s7/s7_server.hpp"
 #include "st/analyzer.hpp"
 #include "st/st_program.hpp"
+#include "support/engine.hpp"
 #include <arpa/inet.h>
 #include <array>
 #include <bit>
@@ -136,7 +137,7 @@ TEST_CASE("ST variables can live in data blocks") {
                     .value();
     ProcessImage image(0, 0, 0);
     image.addDataBlock(2, 6);
-    st::Interpreter interpreter(std::move(unit));
+    st::Interpreter interpreter(std::move(unit), 1'000'000, testEngine());
     image.write(parseAddress("%DB2.DBW0").value(), 10);
     interpreter.runCycle(image, TimePoint{});
     CHECK(std::bit_cast<float>(image.read(parseAddress("%DB2.DBD2").value())) == 15.0F);
@@ -144,7 +145,8 @@ TEST_CASE("ST variables can live in data blocks") {
 
 TEST_CASE("A missing data block puts the program in STOP instead of crashing") {
     ProcessImage image(0, 1, 0); // no DB3
-    st::StProgram program(st::compileProgram("PROGRAM P VAR x AT %DB3.DBW0 : INT; END_VAR x := 1; END_PROGRAM").value());
+    st::StProgram program(st::compileProgram("PROGRAM P VAR x AT %DB3.DBW0 : INT; END_VAR x := 1; END_PROGRAM").value(),
+                          {}, 1'000'000, testEngine());
     program.execute(image, CycleContext{TimePoint{}, 0});
     REQUIRE(program.stopped());
     CHECK(program.stopError()->message == "DB3 doesn't exist");
@@ -267,7 +269,7 @@ TEST_CASE("The S7 demo program, controlled by an S7 client like plc_gui") {
     for (const auto& [number, size] : st::dataBlocksUsedBy(unit)) {
         image.addDataBlock(number, size);
     }
-    st::StProgram program(std::move(unit));
+    st::StProgram program(std::move(unit), {}, 1'000'000, testEngine());
     struct : IoDriver {
         void readInputs(ProcessImage&) override {}
         void writeOutputs(const ProcessImage&) override {}

@@ -24,6 +24,15 @@ add_executable(soft_plc_tests
   st/st_program_test.cpp
   monitor/monitor_test.cpp
   s7/s7_server_test.cpp
+  st/engine_equivalence_test.cpp
 )
 target_link_libraries(soft_plc_tests PRIVATE soft_plc_core snap7_static doctest::doctest fmt::fmt)
-add_test(NAME soft_plc_tests COMMAND soft_plc_tests)
+target_include_directories(soft_plc_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# Lets tests find the example programs.
+target_compile_definitions(soft_plc_tests PRIVATE SOFT_PLC_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+# The whole suite runs once per engine (see tests/support/engine.hpp).
+add_test(NAME soft_plc_tests_bytecode COMMAND soft_plc_tests)
+set_tests_properties(soft_plc_tests_bytecode PROPERTIES ENVIRONMENT "SOFT_PLC_TEST_ENGINE=bytecode")
+add_test(NAME soft_plc_tests_tree COMMAND soft_plc_tests)
+set_tests_properties(soft_plc_tests_tree PROPERTIES ENVIRONMENT "SOFT_PLC_TEST_ENGINE=tree")

@@ -1,0 +1,26 @@
+#pragma once
+#include "st/ast.hpp"
+#include "st/bytecode.hpp"
+
+namespace softplc::st {
+
+// Compiles the body of an analyzed POU into bytecode for the VM.
+//
+// Structured statements become jumps:
+//
+//   IF c THEN x; ELSE y; END_IF;        <c>
+//                                       JumpIfFalse  ELSE
+//                                       <x>
+//                                       Jump         END
+//                               ELSE:   <y>
+//                               END:
+//
+//   WHILE c DO x; END_WHILE;     TOP:   <c>
+//                                       JumpIfFalse  END
+//                                       LoopTick
+//                                       <x>
+//                                       Jump         TOP
+//                               END:
+Chunk compile(const Pou& pou);
+
+} // namespace softplc::st

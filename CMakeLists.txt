@@ -80,6 +80,7 @@ add_library(soft_plc_core STATIC
   src/st/analyzer.cpp
   src/st/interpreter.cpp
   src/st/st_program.cpp
+  src/st/compiler.cpp
   src/st/builtins.cpp
   src/st/value_text.cpp
   src/monitor/monitor_service.cpp
@@ -105,6 +106,9 @@ target_link_libraries(soft_plc PRIVATE soft_plc_core fmt::fmt)
 # --- Tools ---
 add_executable(st_parse tools/st_parse.cpp)
 target_link_libraries(st_parse PRIVATE soft_plc_core fmt::fmt)
+
+add_executable(st_bench tools/st_bench.cpp)
+target_link_libraries(st_bench PRIVATE soft_plc_core fmt::fmt)
 
 # --- Monitoring GUI (optional: needs GLFW and OpenGL) ---
 option(SOFT_PLC_BUILD_GUI "Build the soft_plc_monitor GUI (needs GLFW and OpenGL)" ON)

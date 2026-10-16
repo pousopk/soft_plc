@@ -24,7 +24,8 @@ class StProgram : public Program {
 public:
     using StopHandler = std::function<void(const RuntimeError&)>;
 
-    explicit StProgram(CompilationUnit unit, StopHandler onStop = {}, std::uint64_t loopLimit = 1'000'000);
+    explicit StProgram(CompilationUnit unit, StopHandler onStop = {}, std::uint64_t loopLimit = 1'000'000,
+                       Engine engine = Engine::Bytecode);
 
     void execute(ProcessImage& image, const CycleContext& context) override;
 

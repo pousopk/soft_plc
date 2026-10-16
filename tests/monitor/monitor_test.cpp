@@ -6,6 +6,7 @@
 #include "st/analyzer.hpp"
 #include "st/st_program.hpp"
 #include "st/value_text.hpp"
+#include "support/engine.hpp"
 #include <chrono>
 #include <future>
 #include <thread>
@@ -38,7 +39,7 @@ const char* kProgram = "PROGRAM Main\n"
 
 // A PLC with the test program, driven cycle by cycle.
 struct Plc {
-    Plc() : image(1, 1, 1), program(compile()), cycle(image, io, program, 10ms), service(program, image, cycle) {}
+    Plc() : image(1, 1, 1), program(compile(), {}, 1'000'000, testEngine()), cycle(image, io, program, 10ms), service(program, image, cycle) {}
 
     static st::CompilationUnit compile() {
         auto unit = st::compileProgram(kProgram);

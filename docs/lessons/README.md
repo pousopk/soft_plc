@@ -10,3 +10,4 @@ What each milestone teaches, both about PLCs and about C++, with pointers into t
 | 4. Function blocks and the standard library | [04-function-blocks.md](04-function-blocks.md) |
 | 5. Online monitoring | [05-online-monitoring.md](05-online-monitoring.md) |
 | 6. Data blocks and the S7 server | [06-s7-server.md](06-s7-server.md) |
+| 7. A bytecode compiler and VM | [07-bytecode-vm.md](07-bytecode-vm.md) |

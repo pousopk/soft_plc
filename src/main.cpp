@@ -67,6 +67,7 @@ struct Options {
     std::optional<std::uint16_t> monitorPort;
     std::optional<std::uint16_t> s7Port;
     std::map<std::uint16_t, std::size_t> dataBlocks; // --db N:SIZE
+    softplc::st::Engine engine = softplc::st::Engine::Bytecode;
 };
 
 std::optional<unsigned> parseNumber(std::string_view text, unsigned max) {
@@ -108,6 +109,10 @@ std::optional<Options> parseOptions(int argc, char** argv) {
         } else if (auto s7 = portOption(arg, "--s7", kDefaultS7Port, matched, valid); matched) {
             if (!valid) return std::nullopt;
             options.s7Port = s7;
+        } else if (arg == "--engine=tree") {
+            options.engine = softplc::st::Engine::TreeWalker;
+        } else if (arg == "--engine=bytecode") {
+            options.engine = softplc::st::Engine::Bytecode;
         } else if (arg == "--db" && i + 1 < argc) {
             // --db NUMBER:SIZE, e.g. --db 10:256
             const std::string_view spec = argv[++i];
@@ -134,12 +139,14 @@ int main(int argc, char** argv) {
 
     const auto options = parseOptions(argc, argv);
     if (!options || (options->monitorPort && options->programPath.empty())) {
-        fmt::print(stderr, "usage: soft_plc [--monitor[=PORT]] [--s7[=PORT]] [--db N:SIZE]... [program.st]\n"
+        fmt::print(stderr, "usage: soft_plc [--monitor[=PORT]] [--s7[=PORT]] [--db N:SIZE]... [--engine=tree|bytecode]\n"
+                           "                [program.st]\n"
                            "  --monitor    accept monitoring connections on 127.0.0.1:{} (or PORT);\n"
                            "               needs a program file. Connect with soft_plc_monitor.\n"
                            "  --s7         act as an S7 server on 127.0.0.1:{} (or PORT), e.g. for plc_gui\n"
                            "  --db N:SIZE  create data block N with SIZE bytes (DBs used with AT are\n"
-                           "               created automatically, at least as big as needed)\n",
+                           "               created automatically, at least as big as needed)\n"
+                           "  --engine     run the program on the bytecode VM (default) or the tree-walker\n",
                    kDefaultMonitorPort, kDefaultS7Port);
         return 2;
     }
@@ -186,10 +193,11 @@ int main(int argc, char** argv) {
             image.addDataBlock(number, size);
         }
 
-        auto st = std::make_unique<softplc::st::StProgram>(std::move(*compiled), onStop);
+        auto st = std::make_unique<softplc::st::StProgram>(std::move(*compiled), onStop, 1'000'000, options->engine);
         stProgram = st.get();
         program = std::move(st);
-        fmt::print("Running program '{}' from {}.\n", stProgram->interpreter().program().name, options->programPath);
+        fmt::print("Running program '{}' from {} ({} engine).\n", stProgram->interpreter().program().name,
+                   options->programPath, softplc::st::engineName(options->engine));
     } else {
         for (const auto& [number, size] : options->dataBlocks) {
             image.addDataBlock(number, size);

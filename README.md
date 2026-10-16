@@ -50,6 +50,24 @@ S7 always uses port 102, and Linux only lets privileged programs listen on ports
 
 Snap7 is fetched and patched automatically (`cmake/patch_snap7.cmake`): it fixes a C++17 compile error, two memory bugs, and a missing `return` in Snap7's server code that crashed it as soon as a client asked for the CPU state.
 
+### Two engines
+
+Programs run on a **bytecode VM** by default: each POU is compiled once to instructions for a stack machine. The original **tree-walking interpreter** is still there (`--engine=tree`); both give exactly the same results, and the test suite runs on both (`ctest` runs it twice).
+
+```bash
+./build/st_parse --bytecode examples/benchmark.st        # show the compiled bytecode
+./build-release/st_bench examples/benchmark.st           # compare the engines' speed
+```
+
+Measured on this machine (Release build, µs per cycle):
+
+| Program | Tree-walker | Bytecode VM | Speed-up |
+|---|---|---|---|
+| `examples/benchmark.st` | 82.2 | 30.3 | 2.7× |
+| `examples/loops.st` | 8.2 | 3.7 | 2.2× |
+| `examples/function_blocks.st` | 0.63 | 0.28 | 2.2× |
+| `examples/traffic_light.st` | 0.12 | 0.07 | 1.8× |
+
 For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release`.
 
 ## Structured Text supported so far
@@ -68,13 +86,13 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 |---|---|
 | `src/core/` | Addresses, process image, program and I/O interfaces, scan cycle |
 | `src/stdlib/` | Standard function blocks in C++: timers, counters, edges, flip-flops |
-| `src/st/` | Structured Text: lexer, syntax tree, parser, analyzer (type checks), interpreter, standard block bridge |
+| `src/st/` | Structured Text: lexer, syntax tree, parser, analyzer (type checks), interpreter, bytecode compiler and VM, standard block bridge |
 | `src/monitor/` | Online monitoring: request handling, TCP server and client |
 | `src/s7/` | S7 server (Snap7) sharing the process image with S7 clients |
 | `cmake/` | Snap7 build recipe and source patches |
 | `src/demo/` | Demo program and console I/O driver used by `main.cpp` |
 | `src/util/` | Small general-purpose helpers |
-| `tools/` | `st_parse` (command line) and `monitor_gui/` (the `soft_plc_monitor` GUI) |
+| `tools/` | `st_parse` and `st_bench` (command line), and `monitor_gui/` (the `soft_plc_monitor` GUI) |
 | `examples/` | Example Structured Text programs |
 | `tests/` | doctest unit tests, mirroring `src/` |
 | `docs/lessons/` | What each milestone teaches about PLCs and C++, with review questions |
@@ -84,7 +102,7 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 - **Scan cycle engine:** read inputs → run program → write outputs, fixed cycle time, watchdog, cycle statistics.
 - **Memory model:** `%I`, `%Q`, `%M` areas and data blocks with bit, byte and word access.
 - **Data types:** BOOL, INT, DINT, REAL, TIME, STRING, arrays, structs.
-- **Structured Text:** lexer → parser → AST → type checking → interpreter (later bytecode and a VM).
+- **Structured Text:** lexer → parser → AST → type checking → tree-walking interpreter or bytecode compiler + VM.
 - **Standard library:** TON, TOF, TP, CTU, CTD, R_TRIG, F_TRIG, SR, RS.
 - **Online monitoring:** watch and force variables while running.
 - **S7 server:** expose memory through Snap7 so `plc_gui` and `factory_sim` can connect.

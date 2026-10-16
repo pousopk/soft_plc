@@ -3,6 +3,7 @@
 #include "st/interpreter.hpp"
 #include "st/lexer.hpp"
 #include "st/parser.hpp"
+#include "support/engine.hpp"
 #include <chrono>
 #include <string>
 
@@ -23,7 +24,7 @@ std::string errorOf(std::string_view source) {
 // Compiles and runs a program, with a clock that advances 10 ms per cycle.
 class Runner {
 public:
-    explicit Runner(std::string_view source) : image_(4, 4, 8), interpreter_(compile(source)) {}
+    explicit Runner(std::string_view source) : image_(4, 4, 8), interpreter_(compile(source), 1'000'000, testEngine()) {}
 
     Runner& cycles(int count) {
         for (int i = 0; i < count; ++i) {
@@ -320,7 +321,7 @@ TEST_CASE("Function blocks can contain other function blocks") {
 TEST_CASE("valueOf reads instance members but not whole instances") {
     ProcessImage image(1, 1, 1);
     CompilationUnit unit = compileProgram("PROGRAM P VAR t : TON; END_VAR END_PROGRAM").value();
-    Interpreter interpreter(std::move(unit));
+    Interpreter interpreter(std::move(unit), 1'000'000, testEngine());
     CHECK(interpreter.valueOf("t.Q", image).has_value());
     CHECK(interpreter.valueOf("T.q", image).has_value()); // case-insensitive
     CHECK_FALSE(interpreter.valueOf("t", image).has_value());

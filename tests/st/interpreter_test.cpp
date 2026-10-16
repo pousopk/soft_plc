@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include "st/analyzer.hpp"
 #include "st/interpreter.hpp"
+#include "support/engine.hpp"
 #include <chrono>
 #include <cmath>
 #include <string>
@@ -19,7 +20,7 @@ namespace {
 class Runner {
 public:
     explicit Runner(std::string_view source, std::uint64_t loopLimit = 1'000'000)
-        : image_(8, 8, 32), interpreter_(compile(source), loopLimit) {}
+        : image_(8, 8, 32), interpreter_(compile(source), loopLimit, testEngine()) {}
 
     // Runs `count` cycles, with the clock advancing 10 ms per cycle like the real scan cycle.
     Runner& cycles(int count) {

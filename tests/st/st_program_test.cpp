@@ -2,6 +2,7 @@
 #include "core/scan_cycle.hpp"
 #include "st/analyzer.hpp"
 #include "st/st_program.hpp"
+#include "support/engine.hpp"
 #include <chrono>
 
 using namespace softplc;
@@ -28,7 +29,8 @@ TEST_CASE("An ST program runs inside the scan cycle") {
     ProcessImage image(1, 1, 0);
     NullIo io;
     StProgram program(compile("PROGRAM P VAR n : INT; lamp AT %QX0.0 : BOOL; END_VAR\n"
-                              "n := n + 1; lamp := n >= 3; END_PROGRAM"));
+                              "n := n + 1; lamp := n >= 3; END_PROGRAM"),
+                      {}, 1'000'000, testEngine());
     ScanCycle plc(image, io, program, 10ms);
 
     plc.runOnce(Clock::now());
@@ -49,7 +51,8 @@ TEST_CASE("A runtime error puts the program in STOP and switches the outputs off
                       [&](const RuntimeError& error) {
                           ++stopCalls;
                           stopMessage = error.message;
-                      });
+                      },
+                      1'000'000, testEngine());
     ScanCycle plc(image, io, program, 10ms);
     image.writeByte(Area::Output, 1, 0xFF); // some other output that's also on
 
