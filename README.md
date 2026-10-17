@@ -96,12 +96,13 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 | `examples/` | Example Structured Text programs |
 | `tests/` | doctest unit tests, mirroring `src/` |
 | `docs/lessons/` | What each milestone teaches about PLCs and C++, with review questions |
+| `docs/cpp/` | The C++ in the finished code, one topic per lesson, with review questions |
 
 ## Components
 
 - **Scan cycle engine:** read inputs → run program → write outputs, fixed cycle time, watchdog, cycle statistics.
 - **Memory model:** `%I`, `%Q`, `%M` areas and data blocks with bit, byte and word access.
-- **Data types:** BOOL, INT, DINT, REAL, TIME, STRING, arrays, structs.
+- **Data types:** BOOL, INT, DINT, REAL, TIME (STRING, arrays and structs are not supported yet).
 - **Structured Text:** lexer → parser → AST → type checking → tree-walking interpreter or bytecode compiler + VM.
 - **Standard library:** TON, TOF, TP, CTU, CTD, R_TRIG, F_TRIG, SR, RS.
 - **Online monitoring:** watch and force variables while running.
