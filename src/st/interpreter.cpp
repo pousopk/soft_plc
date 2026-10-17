@@ -1,9 +1,11 @@
 #include "st/interpreter.hpp"
 #include "st/builtins.hpp"
 #include "st/compiler.hpp"
+#include "st/functions.hpp"
 #include "st/runtime_values.hpp"
 #include "util/overloaded.hpp"
 #include "util/text.hpp"
+#include <array>
 #include <bit>
 #include <charconv>
 #include <cmath>
@@ -96,11 +98,20 @@ Interpreter::Interpreter(CompilationUnit unit, std::uint64_t loopLimit, Engine e
     : unit_(std::make_unique<CompilationUnit>(std::move(unit))), loopLimit_(loopLimit), engine_(engine) {
     if (engine_ == Engine::Bytecode) {
         // Compile every POU once, up front: cycles then only run the bytecode.
-        chunks_.emplace(&unit_->program, compile(unit_->program));
+        chunks_.emplace(&unit_->program, compile(unit_->program, unit_->functions));
         for (const auto& functionBlock : unit_->functionBlocks) {
-            chunks_.emplace(&functionBlock, compile(functionBlock));
+            chunks_.emplace(&functionBlock, compile(functionBlock, unit_->functions));
+        }
+        for (const auto& function : unit_->functions) {
+            chunks_.emplace(&function, compile(function, unit_->functions));
         }
         vmStack_.resize(16 * 1024);
+    }
+    for (const auto& function : unit_->functions) {
+        FunctionFrame frame;
+        frame.instance = createInstance(function);
+        frame.initial = frame.instance->values;
+        functions_.push_back(std::move(frame));
     }
     root_ = createInstance(unit_->program);
 }
@@ -727,6 +738,38 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
             }
             break;
         case Op::Call: run(*self.children[in.a]); break;
+        case Op::CallBuiltin: {
+            const auto& call = *chunk.calls[in.a].call;
+            const auto count = call.arguments.size();
+            std::array<Value, kMaxCallArguments> inputs;
+            sp -= count;
+            for (std::size_t i = 0; i < count; ++i) {
+                inputs[i] = fromSlot(sp[i], call.argumentTypes[i]);
+            }
+            *sp++ = toSlot(applyBuiltin(call.builtin, call.resultType, std::span(inputs.data(), count), where()));
+            break;
+        }
+        case Op::CallFunction: {
+            const auto& info = chunk.calls[in.a];
+            const auto& call = *info.call;
+            const Pou& function = unit_->functions[call.functionIndex];
+            const auto count = call.arguments.size();
+            std::array<Argument, kMaxCallArguments> arguments;
+            sp -= count;
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto slot = call.arguments[i].slot;
+                const auto& input = function.variables[slot];
+                arguments[i].slot = slot;
+                if (input.typeInfo->isAggregate()) {
+                    arguments[i].aggregate = input.typeInfo;
+                    arguments[i].from = vmPlace(chunk.places[info.sourcePlaces[i]], self, sp[i].i);
+                } else {
+                    arguments[i].value = fromSlot(sp[i], input.type);
+                }
+            }
+            *sp++ = toSlot(invokeFunction(call.functionIndex, std::span(arguments.data(), count)));
+            break;
+        }
         case Op::Return: return;
         }
     }
@@ -756,6 +799,10 @@ Value Interpreter::evaluate(const Expression& expression, Instance& self) {
                               }
                               return loadLeaf(place(access, self), access.type->elementary, image_);
                           },
+                          [&](const CallExpression& call) {
+                              return call.builtin != BuiltinFunction::None ? callBuiltin(call, self, expression.location)
+                                                                           : callFunction(call, self);
+                          },
                           [&](const UnaryExpression& unary) -> Value {
                               const auto operand = evaluate(*unary.operand, self);
                               if (unary.op == UnaryOperator::Not) {
@@ -769,6 +816,65 @@ Value Interpreter::evaluate(const Expression& expression, Instance& self) {
                           [&](const BinaryExpression& binary) { return evaluateBinary(binary, expression, self); },
                       },
                       expression.node);
+}
+
+// ---------------------------------------------------------------- Function calls
+
+namespace {
+
+// An argument as the type a standard function wants: integers widened to
+// REAL where needed (like IntToReal in the VM, without rounding to float).
+Value asArgument(const Value& value, DataType type) {
+    return type == DataType::Real ? Value{toReal(value)} : value;
+}
+
+} // namespace
+
+Value Interpreter::callBuiltin(const CallExpression& call, Instance& self, SourceLocation where) {
+    std::array<Value, kMaxCallArguments> values;
+    const auto count = call.arguments.size();
+    for (std::size_t i = 0; i < count; ++i) {
+        values[i] = asArgument(evaluate(*call.arguments[i].value, self), call.argumentTypes[i]);
+    }
+    return applyBuiltin(call.builtin, call.resultType, std::span(values.data(), count), where);
+}
+
+// All the arguments are worked out first, before the function's frame is
+// reset: an argument may call the same function, as in Scale(Scale(x)).
+Value Interpreter::callFunction(const CallExpression& call, Instance& self) {
+    const Pou& function = unit_->functions[call.functionIndex];
+    std::array<Argument, kMaxCallArguments> arguments;
+    const auto count = call.arguments.size();
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto& argument = call.arguments[i];
+        const auto& input = function.variables[argument.slot];
+        arguments[i].slot = argument.slot;
+        if (input.typeInfo->isAggregate()) {
+            arguments[i].aggregate = input.typeInfo;
+            arguments[i].from = place(std::get<Access>(argument.value->node), self);
+        } else {
+            arguments[i].value = evaluate(*argument.value, self);
+        }
+    }
+    return invokeFunction(call.functionIndex, std::span(arguments.data(), count));
+}
+
+// Runs a FUNCTION with fresh memory and gives back its result. Shared by both engines.
+Value Interpreter::invokeFunction(std::size_t index, std::span<const Argument> arguments) {
+    auto& frame = functions_[index];
+    Instance& instance = *frame.instance;
+    instance.values = frame.initial; // same size: copies values, allocates nothing
+    for (const auto& argument : arguments) {
+        const auto input = wholeVariable(instance, argument.slot);
+        if (argument.aggregate != nullptr) {
+            copyAggregate(argument.from, input, *argument.aggregate);
+        } else {
+            storeLeaf(input, input.variable->type, argument.value);
+        }
+    }
+    run(instance);
+    const auto& result = instance.type->variables[instance.type->returnSlot];
+    return instance.values[result.leaf];
 }
 
 Value Interpreter::evaluateBinary(const BinaryExpression& binary, const Expression& expression, Instance& self) {

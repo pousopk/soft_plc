@@ -1,5 +1,6 @@
 #include "st/analyzer.hpp"
 #include "st/builtins.hpp"
+#include "st/functions.hpp"
 #include "st/parser.hpp"
 #include "util/overloaded.hpp"
 #include "util/text.hpp"
@@ -105,21 +106,32 @@ public:
 
     void run() {
         registerFunctionBlockTypes();
+        registerFunctions();
         registerTypeDeclarations();
         for (auto& type : unit_.types) {
             resolveDeclaredType(type);
         }
-        // First every POU's variables, so a body can use any function
-        // block's inputs and outputs, wherever that block is declared.
+        // First every POU's variables, so a body can use any function or
+        // function block, wherever it is declared.
+        for (auto& function : unit_.functions) {
+            declarePou(function);
+        }
         for (auto& functionBlock : unit_.functionBlocks) {
             declarePou(functionBlock);
         }
         declarePou(unit_.program);
+        calls_.assign(unit_.functions.size(), {});
+        for (std::size_t i = 0; i < unit_.functions.size(); ++i) {
+            currentFunction_ = i;
+            checkBody(unit_.functions[i]);
+        }
+        currentFunction_ = kNoSlot;
         for (auto& functionBlock : unit_.functionBlocks) {
             checkBody(functionBlock);
         }
         checkBody(unit_.program);
         checkNoFunctionBlockContainsItself();
+        checkNoFunctionCallsItself();
     }
 
 private:
@@ -175,6 +187,56 @@ private:
         }
     }
 
+    // ------------------------------------------------------------ Functions
+
+    void registerFunctions() {
+        for (std::size_t i = 0; i < unit_.functions.size(); ++i) {
+            const auto& function = unit_.functions[i];
+            const auto upper = toUpper(function.name);
+            if (findBuiltinFunction(function.name)) {
+                fail(function.location, fmt::format("'{}' is a standard function; choose another name", function.name));
+            }
+            if (const auto fb = functionBlocks_.find(upper); fb != functionBlocks_.end()) {
+                fail(function.location,
+                     fb->second->builtin ? fmt::format("'{}' is a standard function block; choose another name", function.name)
+                                         : fmt::format("'{}' is already the name of a function block", function.name));
+            }
+            const auto [it, inserted] = functions_.emplace(upper, i);
+            if (!inserted) {
+                fail(function.location, fmt::format("function '{}' is already defined on line {}", function.name,
+                                                    unit_.functions[it->second].location.line));
+            }
+        }
+    }
+
+    // A FUNCTION may call other functions, but never itself, directly or
+    // through others: IEC 61131-3 doesn't allow recursion.
+    void checkNoFunctionCallsItself() const {
+        for (std::size_t start = 0; start < unit_.functions.size(); ++start) {
+            std::vector<std::size_t> path{start};
+            checkCalls(path);
+        }
+    }
+
+    void checkCalls(std::vector<std::size_t>& path) const {
+        for (const auto& [callee, where] : calls_[path.back()]) {
+            if (callee == path.front()) {
+                std::string chain;
+                for (const auto step : path) {
+                    chain += unit_.functions[step].name + " -> ";
+                }
+                fail(where, fmt::format("function '{}' calls itself: {}{} (recursion isn't allowed)",
+                                        unit_.functions[callee].name, chain, unit_.functions[callee].name));
+            }
+            if (std::find(path.begin(), path.end(), callee) != path.end()) {
+                continue; // a cycle that doesn't include `start`: reported from its own start
+            }
+            path.push_back(callee);
+            checkCalls(path);
+            path.pop_back();
+        }
+    }
+
     // ------------------------------------------------------------ Declared types (TYPE ... END_TYPE)
 
     void registerTypeDeclarations() {
@@ -187,6 +249,9 @@ private:
                 fail(type.location, fb->second->builtin
                                         ? fmt::format("'{}' is a standard function block; choose another name", type.name)
                                         : fmt::format("'{}' is already the name of a function block", type.name));
+            }
+            if (functions_.count(upper) > 0) {
+                fail(type.location, fmt::format("'{}' is already the name of a function", type.name));
             }
             const auto [it, inserted] = declaredTypes_.emplace(upper, &type);
             if (!inserted) {
@@ -339,6 +404,12 @@ private:
     }
 
     bool inProgram() const { return pou_->kind == PouKind::Program; }
+    bool inFunction() const { return pou_->kind == PouKind::Function; }
+
+    // "function block 'F'" or "function 'F'", for messages.
+    std::string pouDescription() const {
+        return fmt::format("{} '{}'", inFunction() ? "function" : "function block", pou_->name);
+    }
 
     void declarePou(Pou& pou) {
         pou_ = &pou;
@@ -349,6 +420,11 @@ private:
             const auto [it, inserted] = slots_.emplace(toUpper(variable.name), slot);
             if (!inserted) {
                 const auto& first = pou.variables[it->second];
+                if (slot == pou.returnSlot) {
+                    fail(first.location, fmt::format("'{}' is the name of the function, which holds its result; "
+                                                     "choose another name",
+                                                     first.name));
+                }
                 fail(variable.location,
                      fmt::format("'{}' is already declared on line {}", variable.name, first.location.line));
             }
@@ -356,7 +432,21 @@ private:
                 fail(variable.location, "a PROGRAM can only have VAR blocks; VAR_INPUT and VAR_OUTPUT are for "
                                         "function blocks");
             }
+            if (inFunction() && variable.section == VarSection::Output && slot != pou.returnSlot) {
+                fail(variable.location, fmt::format("a FUNCTION has no VAR_OUTPUT: it gives back one value, by "
+                                                    "assigning to its name, like {} := ...;",
+                                                    pou.name));
+            }
             resolveVariableType(variable);
+            if (inFunction() && variable.type == DataType::FunctionBlock) {
+                fail(variable.location, fmt::format("a FUNCTION has no memory between calls, so it can't contain "
+                                                    "function block instances like '{}'; use a FUNCTION_BLOCK",
+                                                    variable.name));
+            }
+            if (inFunction() && slot == pou.returnSlot && variable.typeInfo->isAggregate()) {
+                fail(variable.location, "a FUNCTION returns BOOL, INT, DINT, REAL or TIME; give back arrays and "
+                                        "structs through a function block's outputs");
+            }
             if (variable.address) {
                 checkAddress(variable);
             }
@@ -372,6 +462,16 @@ private:
             }
         }
         pou.leafCount = leaf;
+        if (inFunction() && pou.variables.size() > kMaxCallArguments + 1) {
+            std::size_t inputs = 0;
+            for (const auto& variable : pou.variables) {
+                inputs += variable.section == VarSection::Input ? 1 : 0;
+            }
+            if (inputs > kMaxCallArguments) {
+                fail(pou.location, fmt::format("function '{}' has {} inputs; at most {} are allowed", pou.name, inputs,
+                                               kMaxCallArguments));
+            }
+        }
     }
 
     void resolveVariableType(VariableDeclaration& variable) {
@@ -396,8 +496,7 @@ private:
 
     void checkAddress(const VariableDeclaration& variable) const {
         if (!inProgram()) {
-            fail(variable.location, fmt::format("AT can only be used in the PROGRAM, not inside function block '{}'",
-                                                pou_->name));
+            fail(variable.location, fmt::format("AT can only be used in the PROGRAM, not inside {}", pouDescription()));
         }
         const auto& address = *variable.address;
         if (variable.type == DataType::FunctionBlock) {
@@ -669,6 +768,241 @@ private:
         return *type;
     }
 
+    // ------------------------------------------------------------ Function calls
+
+    DataType callType(CallExpression& call, SourceLocation where) {
+        if (constantsOnly_) {
+            fail(where, fmt::format("initial values must be constants, not calls like '{}(...)'", call.name));
+        }
+        const auto upper = toUpper(call.name);
+        if (const auto it = slots_.find(upper); it != slots_.end() && variableAt(it->second).type == DataType::FunctionBlock) {
+            fail(where, fmt::format("function block calls are statements: write '{}(...);' on its own, then use its "
+                                    "outputs like {}.Q",
+                                    call.name, call.name));
+        }
+        if (call.arguments.size() > kMaxCallArguments) {
+            fail(where, fmt::format("a call can have at most {} arguments", kMaxCallArguments));
+        }
+        if (const auto it = functions_.find(upper); it != functions_.end()) {
+            return userFunctionCall(call, it->second, where);
+        }
+        if (const auto builtin = findBuiltinFunction(call.name)) {
+            return builtinCall(call, *builtin, where);
+        }
+        fail(where, fmt::format("'{}' is not a function: there's no standard function or FUNCTION with that name",
+                                call.name));
+    }
+
+    static bool byPosition(const CallExpression& call) {
+        return !call.arguments.empty() && call.arguments.front().name.empty();
+    }
+
+    DataType userFunctionCall(CallExpression& call, std::size_t index, SourceLocation where) {
+        const Pou& function = unit_.functions[index];
+        call.functionIndex = index;
+        if (currentFunction_ != kNoSlot) {
+            calls_[currentFunction_].emplace_back(index, where);
+        }
+
+        std::vector<std::size_t> inputs; // the inputs' slots, in declaration order
+        std::string inputNames;
+        for (std::size_t slot = 0; slot < function.variables.size(); ++slot) {
+            if (function.variables[slot].section == VarSection::Input) {
+                inputs.push_back(slot);
+                inputNames += (inputNames.empty() ? "" : ", ") + function.variables[slot].name;
+            }
+        }
+
+        if (byPosition(call)) {
+            if (call.arguments.size() != inputs.size()) {
+                fail(where, fmt::format("{} needs {} argument{} ({}), not {}", function.name, inputs.size(),
+                                        inputs.size() == 1 ? "" : "s", inputNames, call.arguments.size()));
+            }
+            for (std::size_t i = 0; i < inputs.size(); ++i) {
+                call.arguments[i].slot = inputs[i];
+            }
+        } else {
+            std::set<std::size_t> given;
+            for (auto& argument : call.arguments) {
+                const auto slot = findVariable(function, argument.name);
+                if (!slot || function.variables[*slot].section != VarSection::Input) {
+                    fail(argument.location, fmt::format("{} has no input called '{}' (its inputs: {})", function.name,
+                                                        argument.name, inputNames));
+                }
+                if (!given.insert(*slot).second) {
+                    fail(argument.location, fmt::format("'{}' is given twice", function.variables[*slot].name));
+                }
+                argument.slot = *slot; // inputs not given keep their initial value
+            }
+        }
+        for (auto& argument : call.arguments) {
+            const auto& input = function.variables[argument.slot];
+            checkExpression(*argument.value);
+            checkAssignable(*input.typeInfo, *argument.value, function.name + "." + input.name);
+        }
+        return function.variables[function.returnSlot].type;
+    }
+
+    // Puts the arguments of a standard function in order, matching names
+    // like IN1 or MN when they're given by name.
+    void orderBuiltinArguments(CallExpression& call, BuiltinFunction function, SourceLocation where) {
+        if (byPosition(call)) {
+            return;
+        }
+        const auto names = builtinInputNames(function, call.arguments.size());
+        std::vector<CallArgument> ordered(names.size());
+        for (auto& argument : call.arguments) {
+            const auto it = std::find(names.begin(), names.end(), toUpper(argument.name));
+            if (it == names.end()) {
+                std::string list;
+                for (const auto& name : names) {
+                    list += (list.empty() ? "" : ", ") + name;
+                }
+                fail(argument.location, fmt::format("{} has no input called '{}' (its inputs: {})", toUpper(call.name),
+                                                    argument.name, list));
+            }
+            auto& slot = ordered[static_cast<std::size_t>(it - names.begin())];
+            if (slot.value) {
+                fail(argument.location, fmt::format("'{}' is given twice", *it));
+            }
+            slot = std::move(argument);
+        }
+        for (std::size_t i = 0; i < ordered.size(); ++i) {
+            if (!ordered[i].value) {
+                fail(where, fmt::format("{} needs its input {}", toUpper(call.name), names[i]));
+            }
+        }
+        call.arguments = std::move(ordered);
+    }
+
+    // The type all of a standard function's inputs are brought to: the
+    // widest number, or TIME, or (where `allowBool`) BOOL; never a mix.
+    DataType commonInputType(const CallExpression& call, std::size_t first, bool allowBool) const {
+        const auto& firstValue = *call.arguments[first].value;
+        auto common = firstValue.type;
+        for (std::size_t i = first; i < call.arguments.size(); ++i) {
+            const auto& value = *call.arguments[i].value;
+            const auto type = value.type;
+            const bool sameKind = (isNumeric(common) && isNumeric(type)) || (common == type && type == DataType::Time) ||
+                                  (allowBool && common == type && type == DataType::Bool);
+            if (!sameKind) {
+                fail(value.location, fmt::format("{} needs inputs of one kind: all numbers, all TIMEs{}; got {} and {}",
+                                                 toUpper(call.name), allowBool ? " or all BOOLs" : "",
+                                                 typeText(firstValue), typeText(value)));
+            }
+            if (isNumeric(type)) {
+                common = commonNumericType(common, type);
+            }
+        }
+        return common;
+    }
+
+    void requireArgumentCount(const CallExpression& call, std::size_t count, SourceLocation where) const {
+        if (call.arguments.size() != count) {
+            fail(where, fmt::format("{} needs {} argument{}, not {}", toUpper(call.name), count, count == 1 ? "" : "s",
+                                    call.arguments.size()));
+        }
+    }
+
+    DataType builtinCall(CallExpression& call, const BuiltinSignature& signature, SourceLocation where) {
+        const auto function = signature.function;
+        const auto name = toUpper(call.name);
+        switch (function) {
+        case BuiltinFunction::Min:
+        case BuiltinFunction::Max:
+            if (call.arguments.size() < 2) {
+                fail(where, fmt::format("{} needs at least 2 arguments", name));
+            }
+            break;
+        case BuiltinFunction::Mux:
+            if (call.arguments.size() < 3) {
+                fail(where, "MUX needs a selector K and at least 2 inputs");
+            }
+            break;
+        case BuiltinFunction::Expt: requireArgumentCount(call, 2, where); break;
+        case BuiltinFunction::Limit:
+        case BuiltinFunction::Sel: requireArgumentCount(call, 3, where); break;
+        default: requireArgumentCount(call, 1, where); break;
+        }
+        orderBuiltinArguments(call, function, where);
+        for (auto& argument : call.arguments) {
+            checkExpression(*argument.value);
+        }
+
+        const auto& first = *call.arguments[0].value;
+        const auto requireNumber = [&](const Expression& value) {
+            if (!isNumeric(value.type)) {
+                fail(value.location, fmt::format("{} needs a number, not {}", name, typeText(value)));
+            }
+        };
+        call.builtin = function;
+        auto& types = call.argumentTypes;
+        types.clear();
+        switch (function) {
+        case BuiltinFunction::Abs:
+            if (!isNumeric(first.type) && first.type != DataType::Time) {
+                fail(first.location, fmt::format("ABS needs a number or a TIME, not {}", typeText(first)));
+            }
+            types = {first.type};
+            return first.type;
+        case BuiltinFunction::Sqrt:
+        case BuiltinFunction::Ln:
+        case BuiltinFunction::Log:
+        case BuiltinFunction::Exp:
+        case BuiltinFunction::Sin:
+        case BuiltinFunction::Cos:
+        case BuiltinFunction::Tan:
+        case BuiltinFunction::Asin:
+        case BuiltinFunction::Acos:
+        case BuiltinFunction::Atan:
+            requireNumber(first);
+            types = {DataType::Real};
+            return DataType::Real;
+        case BuiltinFunction::Expt:
+            requireNumber(first);
+            requireNumber(*call.arguments[1].value);
+            types = {DataType::Real, DataType::Real};
+            return DataType::Real;
+        case BuiltinFunction::Trunc:
+        case BuiltinFunction::Round:
+        case BuiltinFunction::Ceil:
+        case BuiltinFunction::Floor:
+            requireNumber(first);
+            types = {DataType::Real};
+            return DataType::DInt;
+        case BuiltinFunction::Min:
+        case BuiltinFunction::Max:
+        case BuiltinFunction::Limit: {
+            const auto common = commonInputType(call, 0, false);
+            types.assign(call.arguments.size(), common);
+            return common;
+        }
+        case BuiltinFunction::Sel: {
+            if (first.type != DataType::Bool) {
+                fail(first.location, fmt::format("SEL's selector G must be BOOL, not {}", typeText(first)));
+            }
+            const auto common = commonInputType(call, 1, true);
+            types = {DataType::Bool, common, common};
+            return common;
+        }
+        case BuiltinFunction::Mux: {
+            if (!isInteger(first.type)) {
+                fail(first.location, fmt::format("MUX's selector K must be an integer, not {}", typeText(first)));
+            }
+            const auto common = commonInputType(call, 1, true);
+            types.assign(call.arguments.size(), common);
+            types[0] = DataType::DInt;
+            return common;
+        }
+        case BuiltinFunction::Convert:
+            checkAssignable(*elementaryType(signature.from), first, name);
+            types = {signature.from};
+            return signature.to;
+        case BuiltinFunction::None: break;
+        }
+        return DataType::Unknown;
+    }
+
     // ------------------------------------------------------------ Expressions
 
     // Works out and records the type of an expression and all its children.
@@ -676,6 +1010,10 @@ private:
         expression.type = std::visit(Overloaded{
                                          [&](Literal& literal) { return literalType(literal); },
                                          [&](Access& access) { return resolveAccess(access, expression.location).elementary; },
+                                         [&](CallExpression& call) {
+                                             call.resultType = callType(call, expression.location);
+                                             return call.resultType;
+                                         },
                                          [&](UnaryExpression& unary) { return unaryType(unary, expression); },
                                          [&](BinaryExpression& binary) { return binaryType(binary, expression); },
                                      },
@@ -842,6 +1180,11 @@ private:
     }
 
     void check(CallStatement& s, SourceLocation where) {
+        if (slots_.count(toUpper(s.instance)) == 0 &&
+            (functions_.count(toUpper(s.instance)) > 0 || findBuiltinFunction(s.instance))) {
+            fail(where, fmt::format("the result of function '{}' isn't used: assign it, like x := {}(...);", s.instance,
+                                    s.instance));
+        }
         const auto [instanceSlot, type] = lookupInstance(s.instance, where, "can't be called");
         s.instanceSlot = instanceSlot;
 
@@ -942,6 +1285,10 @@ private:
     std::unordered_map<std::string, TypeDeclaration*> declaredTypes_;     // upper-case name -> TYPE declaration
     std::unordered_map<const TypeDeclaration*, const Type*> resolvedTypes_;
     std::vector<const TypeDeclaration*> resolving_; // the TYPE declarations being built, to catch cycles
+    std::unordered_map<std::string, std::size_t> functions_; // upper-case name -> index in unit_.functions
+    // Per function: the functions its body calls, and where (to catch recursion).
+    std::vector<std::vector<std::pair<std::size_t, SourceLocation>>> calls_;
+    std::size_t currentFunction_ = kNoSlot; // the function whose body is being checked
 
     // State for the POU being checked
     Pou* pou_ = nullptr;

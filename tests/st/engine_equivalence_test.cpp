@@ -96,7 +96,7 @@ std::string example(const std::string& name) {
 } // namespace
 
 TEST_CASE("Both engines agree on every example program") {
-    for (const char* name : {"traffic_light.st", "loops.st", "function_blocks.st", "s7_demo.st", "stop_demo.st", "inspection.st"}) {
+    for (const char* name : {"traffic_light.st", "loops.st", "function_blocks.st", "s7_demo.st", "stop_demo.st", "inspection.st", "analog.st"}) {
         CAPTURE(name);
         runBothEngines(example(name), 700);
     }
@@ -275,4 +275,71 @@ TEST_CASE("Both engines stop with the same error for an index out of bounds") {
                                       200);
     REQUIRE(error.has_value());
     CHECK(error->find("is outside the bounds 0..199 at 2:10") != std::string::npos);
+}
+
+TEST_CASE("Both engines agree on functions and standard functions") {
+    const auto error = runBothEngines(R"(
+        TYPE Point : STRUCT x : REAL; y : REAL; END_STRUCT; END_TYPE
+
+        FUNCTION Scale : REAL
+        VAR_INPUT raw : INT; low : REAL := 0.0; high : REAL := 100.0; END_VAR
+            Scale := low + (high - low) * raw / 27648.0;
+        END_FUNCTION
+
+        FUNCTION Distance : REAL
+        VAR_INPUT a, b : Point; END_VAR
+            Distance := SQRT(EXPT(a.x - b.x, 2) + EXPT(a.y - b.y, 2));
+        END_FUNCTION
+
+        FUNCTION Pick : DINT
+        VAR_INPUT values : ARRAY[0..3] OF DINT; index : INT; END_VAR
+        VAR i : INT; best : DINT; END_VAR
+            IF index < 0 THEN RETURN; END_IF;
+            best := values[0];
+            FOR i := 1 TO 3 DO best := MAX(best, values[i]); END_FOR;
+            Pick := best + values[index MOD 4] + Twice(index);
+        END_FUNCTION
+
+        FUNCTION Twice : DINT VAR_INPUT x : DINT; END_VAR Twice := x * 2; END_FUNCTION
+
+        PROGRAM Functions
+        VAR
+            a AT %IW0 : INT;
+            b AT %IW2 : INT;
+            g AT %IX0.0 : BOOL;
+            r1, r2, r3 : REAL;
+            i1, i2 : INT;
+            d1, d2 : DINT;
+            t1 : TIME;
+            f1 : BOOL;
+            p, q : Point;
+            ring : ARRAY[0..3] OF DINT;
+            n : INT;
+        END_VAR
+            r1 := Scale(raw := a) + Scale(raw := b, high := 10.0) + Scale(a, -1.0, 1.0);
+            r2 := ABS(r1) + SQRT(ABS(a)) + LN(ABS(b) + 1.0) + LOG(ABS(a) + 1) + EXP(a / 10000.0);
+            r3 := SIN(a / 1000.0) * COS(b / 1000.0) + TAN(0.5) + ASIN(0.5) + ACOS(-0.5) + ATAN(b / 3.0);
+            i1 := DINT_TO_INT(INT_TO_DINT(a) * 3) + ABS(b);
+            i2 := REAL_TO_INT(r1 * 100.0) + BOOL_TO_INT(g) + LIMIT(-5, a, 5);
+            d1 := TRUNC(r2 * 1000.0) + ROUND(r1 * 7.5) + CEIL(r3) + FLOOR(-r3) + REAL_TO_DINT(Scale(raw := a) * 1000.0);
+            d2 := MAX(a, b, 0) - MIN(a, b, d1) + MUX(ABS(a MOD 3), 10, 20, 30) + SEL(g, 1, 2);
+            t1 := LIMIT(T#0ms, DINT_TO_TIME(INT_TO_DINT(a)), T#10s) + MAX(T#1s, DINT_TO_TIME(d2));
+            f1 := INT_TO_BOOL(a MOD 2) XOR DINT_TO_BOOL(d2) OR SEL(g, f1, NOT f1);
+            p.x := a; p.y := b; q.x := INT_TO_REAL(b); q.y := DINT_TO_REAL(TIME_TO_DINT(t1)) / 1000.0;
+            r3 := r3 + Distance(p, q);
+            n := (n + 1) MOD 4;
+            ring[n] := a * b;
+            d2 := d2 + Pick(ring, n) + Pick(values := ring, index := -1);
+        END_PROGRAM)",
+                                      2000);
+    CHECK_FALSE(error.has_value());
+}
+
+TEST_CASE("Both engines stop with the same error for a MUX selector out of range") {
+    const auto error = runBothEngines("PROGRAM P VAR k AT %IW0 : INT; x : INT; END_VAR\n"
+                                      "  x := MUX(k MOD 4, 1, 2, 3);\n"
+                                      "END_PROGRAM",
+                                      200);
+    REQUIRE(error.has_value());
+    CHECK(error->find("is outside 0..2 at 2:8") != std::string::npos);
 }

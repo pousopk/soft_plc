@@ -37,7 +37,7 @@ int stackEffect(Op op) {
 
 class Compiler {
 public:
-    explicit Compiler(const Pou& pou) : pou_(pou) {}
+    Compiler(const Pou& pou, const std::vector<Pou>* functions) : pou_(pou), functions_(functions) {}
 
     Chunk run() {
         statements(pou_.body);
@@ -89,6 +89,7 @@ private:
         std::visit(Overloaded{
                        [&](const Literal& literal) { this->literal(literal, e.location); },
                        [&](const Access& access) { load(access, e.location); },
+                       [&](const CallExpression& call) { this->call(call, e.location); },
                        [&](const UnaryExpression& unary) {
                            expression(*unary.operand);
                            if (unary.op == UnaryOperator::Not) {
@@ -179,6 +180,39 @@ private:
             emit(Op::LoadInt, where, leaf);
         }
     }
+
+    // A function call: every argument onto the stack (converted to the type
+    // it's passed as; arrays and structs as the offset of their place),
+    // then one instruction that pops them all and pushes the result.
+    void call(const CallExpression& call, SourceLocation where) {
+        CallInfo info{&call, {}};
+        const Pou* function = call.builtin == BuiltinFunction::None ? &unitFunction(call) : nullptr;
+        for (std::size_t i = 0; i < call.arguments.size(); ++i) {
+            const auto& argument = call.arguments[i];
+            if (function == nullptr) {
+                expression(*argument.value);
+                convertIfNeeded(argument.value->type, call.argumentTypes[i], argument.location);
+                info.sourcePlaces.push_back(CallInfo::kNoPlace);
+                continue;
+            }
+            const auto& input = function->variables[argument.slot];
+            if (input.typeInfo->isAggregate()) {
+                const auto& source = std::get<Access>(argument.value->node);
+                pushOffset(source, argument.location);
+                info.sourcePlaces.push_back(addPlace(source));
+            } else {
+                expression(*argument.value);
+                convertIfNeeded(argument.value->type, input.type, argument.location);
+                info.sourcePlaces.push_back(CallInfo::kNoPlace);
+            }
+        }
+        chunk_.calls.push_back(std::move(info));
+        emit(function == nullptr ? Op::CallBuiltin : Op::CallFunction, where,
+             static_cast<std::uint32_t>(chunk_.calls.size() - 1));
+        depth_ += 1 - static_cast<int>(call.arguments.size()); // pops the arguments, pushes the result
+    }
+
+    const Pou& unitFunction(const CallExpression& call) const { return (*functions_)[call.functionIndex]; }
 
     DataType memberType(std::size_t instanceSlot, std::size_t memberSlot) const {
         return pou_.variables[instanceSlot].functionBlock->variables[memberSlot].type;
@@ -442,6 +476,7 @@ private:
     }
 
     const Pou& pou_;
+    const std::vector<Pou>* functions_; // the FUNCTIONs that calls refer to
     Chunk chunk_;
     int depth_ = 0;
     int maxDepth_ = 0;
@@ -450,7 +485,7 @@ private:
 
 } // namespace
 
-Chunk compile(const Pou& pou) { return Compiler(pou).run(); }
+Chunk compile(const Pou& pou, const std::vector<Pou>& functions) { return Compiler(pou, &functions).run(); }
 
 const char* opName(Op op) {
     switch (op) {
@@ -516,6 +551,8 @@ const char* opName(Op op) {
     case Op::ForTest: return "ForTest";
     case Op::CheckStep: return "CheckStep";
     case Op::Call: return "Call";
+    case Op::CallBuiltin: return "CallBuiltin";
+    case Op::CallFunction: return "CallFunction";
     case Op::Return: return "Return";
     }
     return "?";
@@ -540,6 +577,9 @@ std::string disassemble(const Chunk& chunk) {
         case Op::StoreTemp: case Op::Jump: case Op::JumpIfFalse: case Op::JumpIfTrue: case Op::CheckStep:
         case Op::Call:
             operands = fmt::format("{}", in.a);
+            break;
+        case Op::CallBuiltin: case Op::CallFunction:
+            operands = fmt::format("{}  ; {}", in.a, chunk.calls[in.a].call->name);
             break;
         default: break;
         }

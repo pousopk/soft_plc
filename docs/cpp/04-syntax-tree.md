@@ -8,17 +8,18 @@ The parser turns ST text into a tree of C++ objects, and the analyzer, the inter
 
 ## 1. One node, many kinds: `std::variant`
 
-An expression can be a literal, an access to a variable (`count`, `t1.Q`, `values[i].x`), a unary operation or a binary operation:
+An expression can be a literal, an access to a variable (`count`, `t1.Q`, `values[i].x`), a function call (`MAX(a, b)`), a unary operation or a binary operation:
 
 ```cpp
 // src/st/ast.hpp
 struct Literal          { Value value; bool isTime = false; };
 struct Access           { std::string name; std::vector<Selector> selectors; ... };
+struct CallExpression   { std::string name; std::vector<CallArgument> arguments; ... };
 struct UnaryExpression  { UnaryOperator op; ExpressionPtr operand; };
 struct BinaryExpression { BinaryOperator op; ExpressionPtr left; ExpressionPtr right; DataType operandType; };
 
 struct Expression {
-    std::variant<Literal, Access, UnaryExpression, BinaryExpression> node;
+    std::variant<Literal, Access, CallExpression, UnaryExpression, BinaryExpression> node;
     SourceLocation location;
     DataType type = DataType::Unknown;
 };
@@ -31,7 +32,7 @@ The same idea is used three times:
 | Variant | Alternatives |
 |---|---|
 | `Value` | `bool`, `std::int64_t`, `double` (a runtime value) |
-| `Expression::node` | the 4 expression kinds above |
+| `Expression::node` | the 5 expression kinds above |
 | `Selector` | `FieldSelector` (`.x`), `IndexSelector` (`[i, j]`): the steps after a name in an `Access` |
 | `Initializer::node` | `ExpressionPtr`, `ArrayInitializer` (`[1, 2, 3(0)]`), `StructInitializer` (`(x := 1.0)`) |
 | `Statement::node` | `Assignment`, `IfStatement`, `CaseStatement`, `ForStatement`, `WhileStatement`, `RepeatStatement`, `ExitStatement`, `ReturnStatement`, `CallStatement` |
@@ -80,6 +81,7 @@ std::string formatExpression(const Expression& expression) {
     return std::visit(Overloaded{
                           [](const Literal& literal) { return formatLiteral(literal); },
                           [](const Access& access) { return formatAccess(access); },
+                          [](const CallExpression& call) { ... },
                           [](const UnaryExpression& unary) { ... },
                           [](const BinaryExpression& binary) {
                               return fmt::format("({} {} {})", formatExpression(*binary.left),
@@ -90,7 +92,7 @@ std::string formatExpression(const Expression& expression) {
 }
 ```
 
-`std::visit(f, v)` looks at which alternative `v` holds and calls `f` with it. `f` must accept **every** alternative, so you need one object with four `operator()`s. That's what `Overloaded` builds out of four lambdas:
+`std::visit(f, v)` looks at which alternative `v` holds and calls `f` with it. `f` must accept **every** alternative, so you need one object with five `operator()`s. That's what `Overloaded` builds out of five lambdas:
 
 ```cpp
 // src/util/overloaded.hpp

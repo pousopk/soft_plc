@@ -10,6 +10,8 @@ soft_plc's Structured Text is IEC 61131-3, and SCL in TIA Portal is Siemens' ver
 - Literals: `16#FF`, `2#1010`, `T#1s500ms`, `1.5E3`.
 - `Array[1..10] of Int` and multi-dimensional arrays; structs like UDTs, with the standard-access memory layout when placed in a DB.
 - IEC timers and counters with the same names and pins: `TON`, `TOF`, `TP` (`IN`, `PT`, `Q`, `ET`), `CTU`, `CTD`, `R_TRIG`, `F_TRIG`, `SR`, `RS`.
+- Functions with a return value, like FCs: `FUNCTION Scale : REAL … Scale := …; END_FUNCTION`, called by name or in order.
+- The common standard functions with the same names: `ABS`, `SQRT`, `LN`, `EXP`, `SIN`…, `MIN`, `MAX`, `LIMIT`, `SEL`, `MUX`, `TRUNC`, `ROUND`, `CEIL`, `FLOOR`, and conversions like `INT_TO_REAL`, `DINT_TO_INT`, `REAL_TO_DINT`.
 - Names are case-insensitive.
 
 ## Written differently
@@ -26,8 +28,8 @@ soft_plc's Structured Text is IEC 61131-3, and SCL in TIA Portal is Siemens' ver
 
 ## Not there yet
 
-- **FUNCTIONs** (FCs with a return value) and functions in general: `ABS`, `SQRT`, `MIN`, `MAX`, `LIMIT`, `SEL`, `MOVE_BLK`…
-- **Conversions** like `INT_TO_REAL`, `DINT_TO_INT`, `REAL_TO_DINT`, `ROUND`, `TRUNC`. Widening (INT → DINT → REAL) happens automatically.
+- **Functions without a return value** (`FUNCTION F : VOID`), `VAR_OUTPUT` and `VAR_IN_OUT` in functions, and functions that return arrays or structs.
+- **More standard functions:** `NORM_X`, `SCALE_X`, `MOVE_BLK`, `FILL_BLK`, the string functions, and Siemens' generic `CONVERT`.
 - **Types:** `BYTE`, `WORD`, `DWORD`, `SINT`, `USINT`, `UINT`, `UDINT`, `LINT`, `LREAL`, `STRING`, `CHAR`, `DATE`, `TIME_OF_DAY`, `DTL`, enums.
 - **Bit operations on words:** `SHL`, `SHR`, `ROL`, `AND` on a WORD, slices like `myWord.%X3`.
 - **Variable sections:** `VAR_IN_OUT`, `VAR_TEMP`, `VAR CONSTANT`, retentive variables. All variables keep their values between cycles (like static variables in an FB).
@@ -41,4 +43,6 @@ soft_plc's Structured Text is IEC 61131-3, and SCL in TIA Portal is Siemens' ver
 - **Array index out of range:** a real S7 reports an access error, and depending on the CPU and its settings, goes to STOP or calls an error OB. soft_plc always goes to STOP and tells you the line and column.
 - **Variables without `AT`** are like *optimized* access in TIA: they have no byte address and can only be reached by name (from the program or a monitoring tool). Variables with `AT` are like *standard* access: fixed addresses that S7 clients use.
 - **Assigning arrays:** both sides must have the same bounds and element type; there's no `MOVE_BLK` for copying part of an array (yet).
+- **Narrowing conversions:** `DINT_TO_INT` keeps the low 16 bits and `REAL_TO_INT` limits to the INT range. TIA Portal's conversions set `ENO` to FALSE when a value doesn't fit; soft_plc has no `ENO`.
+- **Calls in order** must give every input; calls by name may leave inputs out (they get their default).
 - **Compile errors** are reported one at a time: the first error stops compilation.

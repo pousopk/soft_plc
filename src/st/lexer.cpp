@@ -46,6 +46,8 @@ const char* tokenKindName(TokenKind kind) {
     case TokenKind::EndProgram: return "'END_PROGRAM'";
     case TokenKind::FunctionBlock: return "'FUNCTION_BLOCK'";
     case TokenKind::EndFunctionBlock: return "'END_FUNCTION_BLOCK'";
+    case TokenKind::Function: return "'FUNCTION'";
+    case TokenKind::EndFunction: return "'END_FUNCTION'";
     case TokenKind::Var: return "'VAR'";
     case TokenKind::VarInput: return "'VAR_INPUT'";
     case TokenKind::VarOutput: return "'VAR_OUTPUT'";
@@ -93,6 +95,7 @@ constexpr std::pair<std::string_view, TokenKind> keywords[] = {
     {"END_VAR", TokenKind::EndVar},  {"AT", TokenKind::At},
     {"VAR_INPUT", TokenKind::VarInput}, {"VAR_OUTPUT", TokenKind::VarOutput},
     {"FUNCTION_BLOCK", TokenKind::FunctionBlock}, {"END_FUNCTION_BLOCK", TokenKind::EndFunctionBlock},
+    {"FUNCTION", TokenKind::Function}, {"END_FUNCTION", TokenKind::EndFunction},
     {"IF", TokenKind::If},           {"THEN", TokenKind::Then},
     {"ELSIF", TokenKind::Elsif},     {"ELSE", TokenKind::Else},
     {"END_IF", TokenKind::EndIf},    {"CASE", TokenKind::Case},

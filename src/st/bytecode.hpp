@@ -47,6 +47,10 @@ enum class Op : std::uint8_t {
     StorePlace, // pop the offset, pop the value, store it
     CopyPlace,  // pop the target's offset, then the source's; copy a whole array or struct (a = source, b = target)
 
+    // Function calls (a = entry in Chunk::calls): pop the arguments, push the result
+    CallBuiltin,  // a standard function like MAX or REAL_TO_INT
+    CallFunction, // a FUNCTION; its array and struct arguments come as offsets of their places
+
     // Integer arithmetic on 64 bits, then wrapped to the type's size
     AddI, SubI, MulI, DivI, ModI, NegI, Wrap16, Wrap32,
     // REAL arithmetic (rounded to 32-bit float precision)
@@ -95,12 +99,21 @@ struct IndexInfo {
     std::size_t stride = 0; // in leaves, or in bits for AT variables
 };
 
+// A function call: the call in the syntax tree, and for each array or
+// struct argument the place it's copied from (kNoPlace for the others).
+struct CallInfo {
+    static constexpr std::uint32_t kNoPlace = 0xFFFFFFFF;
+    const CallExpression* call = nullptr;
+    std::vector<std::uint32_t> sourcePlaces;
+};
+
 // The compiled code of one POU.
 struct Chunk {
     std::vector<Instruction> code;
     std::vector<SourceLocation> locations; // one per instruction, for runtime error messages
     std::vector<PlaceInfo> places;
     std::vector<IndexInfo> indices;
+    std::vector<CallInfo> calls;
     std::size_t temps = 0;                 // scratch slots needed
     std::size_t maxStack = 0;              // deepest the operand stack ever gets
 };

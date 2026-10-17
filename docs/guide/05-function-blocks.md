@@ -129,7 +129,7 @@ END_PROGRAM
 
 Rules:
 - The caller can't assign to an instance's variables outside the call: `fast.period := T#1s;` is an error.
-- Inputs and outputs can be any type, including arrays and structs ([chapter 6](06-arrays-and-structs.md)), but not function block instances.
+- Inputs and outputs can be any type, including arrays and structs ([chapter 7](07-arrays-and-structs.md)), but not function block instances.
 - A function block can contain instances of other blocks, but not of itself (directly or through others).
 - `AT` isn't allowed inside function blocks: pass values in and out through inputs and outputs.
 - The names of the standard blocks (TON, CTU, …) can't be reused.

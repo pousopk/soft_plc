@@ -142,7 +142,6 @@ TEST_CASE("Function block syntax errors") {
         const char* messagePart;
     };
     const Case cases[] = {
-        {"x := t(IN := TRUE);", "function block calls are statements"},
         {"t(IN TRUE);", "expected ':=' after 'IN'"},
         {"t(IN := TRUE;", "expected ')' to close the call"},
         {"t(IN := TRUE)", "expected ';' after the call"},
@@ -174,6 +173,8 @@ TEST_CASE("Function block rules are checked") {
         {"PROGRAM P VAR x : INT; END_VAR x(); END_PROGRAM", "'x' is not a function block instance, so it can't be called"},
         {"PROGRAM P VAR x, y : INT; END_VAR y := x.Q; END_PROGRAM",
          "'x' is not a function block instance or a struct, so it has no members"},
+        {"PROGRAM P VAR t : TON; x : BOOL; END_VAR x := t(IN := TRUE); END_PROGRAM",
+         "function block calls are statements: write 't(...);' on its own, then use its outputs like t.Q"},
         {"PROGRAM P VAR t : TON; END_VAR t.IN := TRUE; END_PROGRAM",
          "can't assign to 't.IN': set inputs in the call, like t(IN := ...); outputs are read-only"},
         {"PROGRAM P VAR t : TON; END_VAR t(START := TRUE); END_PROGRAM", "TON has no input called 'START'"},

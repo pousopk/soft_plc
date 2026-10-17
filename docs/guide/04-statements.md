@@ -112,6 +112,6 @@ END_PROGRAM
 
 ## The watchdog
 
-A program that never finishes its cycle would freeze the PLC. soft_plc counts loop rounds: more than **1 000 000 in one cycle** stops the PLC with "watchdog: more than 1000000 loop iterations in one cycle". A cycle that's just slow (longer than 10 ms) isn't stopped; it's counted as an **overrun** and the next cycle starts late (see `STATUS` in [chapter 7](07-memory-s7-and-online.md)).
+A program that never finishes its cycle would freeze the PLC. soft_plc counts loop rounds: more than **1 000 000 in one cycle** stops the PLC with "watchdog: more than 1000000 loop iterations in one cycle". A cycle that's just slow (longer than 10 ms) isn't stopped; it's counted as an **overrun** and the next cycle starts late (see `STATUS` in [chapter 8](08-memory-s7-and-online.md)).
 
 A classic way to trip the watchdog: `FOR i := 0 TO 32767 DO` with an INT `i`. After 32767, `i + 1` wraps to −32768, which is again `<= 32767`, so the loop never ends. Use a DINT for loops that go to the top of the INT range.

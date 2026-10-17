@@ -10,7 +10,7 @@
 | `REAL` | numbers with decimals | about ±3.4 × 10³⁸, 7 significant digits | 32 bits |
 | `TIME` | a duration | about ±24.8 days, in milliseconds | 32 bits |
 
-These are the same sizes as on a Siemens S7. There are also arrays and structs, built from these ([chapter 6](06-arrays-and-structs.md)).
+These are the same sizes as on a Siemens S7. There are also arrays and structs, built from these ([chapter 7](07-arrays-and-structs.md)).
 
 ## Writing values (literals)
 
@@ -71,7 +71,15 @@ VAR small : INT; big : DINT := 5; END_VAR
 END_PROGRAM
 ```
 
-Conversion functions like `DINT_TO_INT` and `REAL_TO_INT` don't exist yet. Until they do, keep values in the bigger type (`DINT`, `REAL`).
+To go the other way, say so with a conversion function, which also decides what happens to values that don't fit ([chapter 6](06-functions.md#conversions)):
+
+```st
+PROGRAM Explicit
+VAR small : INT; big : DINT := 5; x : REAL := 2.7; END_VAR
+    small := DINT_TO_INT(big);     (* keeps the low 16 bits *)
+    small := REAL_TO_INT(x);       (* rounds: 3 *)
+END_PROGRAM
+```
 
 ## Variables in the PLC's memory: `AT`
 
@@ -90,7 +98,7 @@ END_VAR
 END_PROGRAM
 ```
 
-The size of the address must match the type: a bit (`X`) for BOOL, a word (`W`) for INT, a double word (`D`) for DINT, REAL and TIME. Arrays and structs take a byte address (`%MB10`, `%DB1.DBB0`), see [chapter 6](06-arrays-and-structs.md). [Chapter 7](07-memory-s7-and-online.md) explains the memory areas.
+The size of the address must match the type: a bit (`X`) for BOOL, a word (`W`) for INT, a double word (`D`) for DINT, REAL and TIME. Arrays and structs take a byte address (`%MB10`, `%DB1.DBB0`), see [chapter 7](07-arrays-and-structs.md). [Chapter 8](08-memory-s7-and-online.md) explains the memory areas.
 
 - `AT` is only allowed in the PROGRAM, not inside function blocks.
 - An `AT` variable can't have an initial value: its value comes from the memory.

@@ -47,7 +47,7 @@ enum class TokenKind {
     GreaterEqual, // >=
 
     // Program structure
-    Program, EndProgram, FunctionBlock, EndFunctionBlock,
+    Program, EndProgram, FunctionBlock, EndFunctionBlock, Function, EndFunction,
     Var, VarInput, VarOutput, EndVar, At,
     Type, EndType, Struct, EndStruct, Array,
     // Statements

@@ -19,7 +19,7 @@ Tightest first (higher in the table = done first):
 
 So `a + b * c` is `a + (b * c)`, and `x > 0 AND y > 0` is `(x > 0) AND (y > 0)`. Operators of the same level go left to right: `10 - 4 - 3` is `3`. When in doubt, add parentheses.
 
-There are no bitwise operations on integers (`AND` only takes BOOLs).
+There are no bitwise operations on integers (`AND` only takes BOOLs). For `ABS`, `SQRT`, `MIN`, `MAX`, `LIMIT` and the rest, see [chapter 6](06-functions.md).
 
 ## Mixing types
 
@@ -44,7 +44,7 @@ END_PROGRAM
 
 A REAL is a 32-bit float, like on the PLC: about 7 significant digits. Two consequences:
 
-- `0.1` can't be stored exactly. Don't compare REALs with `=`; compare with a tolerance: `(x - y) < 0.001 AND (y - x) < 0.001` (there's no `ABS` function yet).
+- `0.1` can't be stored exactly. Don't compare REALs with `=`; compare with a tolerance: `ABS(x - y) < 0.001`.
 - Big values lose small steps: `16777216.0 + 1.0` is still `16777216.0`. Don't use a REAL as a counter.
 
 Dividing a REAL by `0.0` doesn't stop the PLC; the result is infinity, as on an S7.

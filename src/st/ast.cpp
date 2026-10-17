@@ -53,6 +53,13 @@ public:
                            line(depth, fmt::format("{} {}", access.selectors.empty() ? "Variable" : "Access",
                                                    formatAccess(access)));
                        },
+                       [&](const CallExpression& call) {
+                           line(depth, fmt::format("Call {}", call.name));
+                           for (const auto& argument : call.arguments) {
+                               labelled(depth + 1, argument.name.empty() ? "Argument" : "Argument " + argument.name,
+                                        *argument.value);
+                           }
+                       },
                        [&](const UnaryExpression& unary) {
                            line(depth, fmt::format("Unary {}", operatorSymbol(unary.op)));
                            this->expression(*unary.operand, depth + 1);
@@ -149,12 +156,17 @@ public:
     }
 
     void pou(const Pou& pou) {
-        line(0, fmt::format("{} {}", pou.kind == PouKind::Program ? "Program" : "FunctionBlock", pou.name));
+        if (pou.kind == PouKind::Function) {
+            line(0, fmt::format("Function {} : {}", pou.name, formatTypeSpec(pou.returnType)));
+        } else {
+            line(0, fmt::format("{} {}", pou.kind == PouKind::Program ? "Program" : "FunctionBlock", pou.name));
+        }
         for (const auto section : {VarSection::Input, VarSection::Output, VarSection::Local}) {
             bool headerWritten = false;
-            for (const auto& variable : pou.variables) {
-                if (variable.section != section) {
-                    continue;
+            for (std::size_t slot = 0; slot < pou.variables.size(); ++slot) {
+                const auto& variable = pou.variables[slot];
+                if (variable.section != section || slot == pou.returnSlot) {
+                    continue; // (a function's result variable is shown in the header)
                 }
                 if (!headerWritten) {
                     line(1, sectionName(section));
@@ -436,6 +448,15 @@ ExpressionPtr cloneExpression(const Expression& expression) {
     auto node = std::visit(Overloaded{
                                [](const Literal& literal) -> Node { return literal; },
                                [](const Access& access) -> Node { return cloneAccess(access); },
+                               [](const CallExpression& call) -> Node {
+                                   CallExpression copy;
+                                   copy.name = call.name;
+                                   for (const auto& argument : call.arguments) {
+                                       copy.arguments.push_back(CallArgument{argument.name, cloneExpression(*argument.value),
+                                                                             argument.location});
+                                   }
+                                   return copy;
+                               },
                                [](const UnaryExpression& unary) -> Node {
                                    return UnaryExpression{unary.op, cloneExpression(*unary.operand)};
                                },
@@ -452,6 +473,18 @@ std::string formatExpression(const Expression& expression) {
     return std::visit(Overloaded{
                           [](const Literal& literal) { return formatLiteral(literal); },
                           [](const Access& access) { return formatAccess(access); },
+                          [](const CallExpression& call) {
+                              std::string text = call.name + "(";
+                              for (std::size_t i = 0; i < call.arguments.size(); ++i) {
+                                  const auto& argument = call.arguments[i];
+                                  text += i == 0 ? "" : ", ";
+                                  if (!argument.name.empty()) {
+                                      text += argument.name + " := ";
+                                  }
+                                  text += formatExpression(*argument.value);
+                              }
+                              return text + ")";
+                          },
                           [](const UnaryExpression& unary) {
                               const char* separator = unary.op == UnaryOperator::Not ? " " : "";
                               return fmt::format("({}{}{})", operatorSymbol(unary.op), separator,
@@ -481,6 +514,10 @@ std::string dumpTree(const CompilationUnit& unit) {
     std::string out;
     for (const auto& type : unit.types) {
         TreeWriter(out).typeDeclaration(type);
+        out += '\n';
+    }
+    for (const auto& function : unit.functions) {
+        out += dumpTree(function);
         out += '\n';
     }
     for (const auto& functionBlock : unit.functionBlocks) {

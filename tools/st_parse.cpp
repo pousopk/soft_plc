@@ -32,7 +32,8 @@ bool isWholeFile(std::string_view source) {
     const auto tokens = softplc::st::tokenize(source);
     return tokens && (tokens->front().kind == softplc::st::TokenKind::Program ||
                       tokens->front().kind == softplc::st::TokenKind::FunctionBlock ||
-                      tokens->front().kind == softplc::st::TokenKind::Type);
+                      tokens->front().kind == softplc::st::TokenKind::Type ||
+                      tokens->front().kind == softplc::st::TokenKind::Function);
 }
 
 } // namespace
@@ -63,12 +64,17 @@ int main(int argc, char** argv) {
             return reportError(program.error(), source);
         }
         if (bytecode) {
+            const auto& functions = program->functions;
+            for (const auto& function : functions) {
+                fmt::print("FUNCTION {}\n{}\n", function.name,
+                           softplc::st::disassemble(softplc::st::compile(function, functions)));
+            }
             for (const auto& functionBlock : program->functionBlocks) {
                 fmt::print("FUNCTION_BLOCK {}\n{}\n", functionBlock.name,
-                           softplc::st::disassemble(softplc::st::compile(functionBlock)));
+                           softplc::st::disassemble(softplc::st::compile(functionBlock, functions)));
             }
             fmt::print("PROGRAM {}\n{}", program->program.name,
-                       softplc::st::disassemble(softplc::st::compile(program->program)));
+                       softplc::st::disassemble(softplc::st::compile(program->program, functions)));
             return 0;
         }
         fmt::print("{}", softplc::st::dumpTree(*program));

@@ -21,6 +21,7 @@ namespace softplc::st {
 //                                       <x>
 //                                       Jump         TOP
 //                               END:
-Chunk compile(const Pou& pou);
+// `functions` are the FUNCTIONs of the same file, which calls refer to by index.
+Chunk compile(const Pou& pou, const std::vector<Pou>& functions);
 
 } // namespace softplc::st

@@ -177,7 +177,7 @@ Arrays of function block instances (`ARRAY[1..4] OF TON`) and function blocks in
 
 ## Arrays and structs in the PLC's memory
 
-With `AT`, an array or struct is placed in the process image or a data block, laid out exactly as Siemens does for **standard (non-optimized) access**. An S7 client, an HMI or `plc_gui` then finds every field at the byte offset TIA Portal would show. The rules, and a full example, are in [chapter 7](07-memory-s7-and-online.md#arrays-and-structs-the-s7-layout).
+With `AT`, an array or struct is placed in the process image or a data block, laid out exactly as Siemens does for **standard (non-optimized) access**. An S7 client, an HMI or `plc_gui` then finds every field at the byte offset TIA Portal would show. The rules, and a full example, are in [chapter 8](08-memory-s7-and-online.md#arrays-and-structs-the-s7-layout).
 
 ```st
 TYPE
@@ -197,4 +197,4 @@ An array or struct with `AT` needs a byte address at an **even** byte: `%MB20`, 
 
 ## Watching them online
 
-Monitoring sees every element and field as its own variable, by path: `results[1].score`, `grid[2,3]` (no space after the comma), `summarize.result.total`. You can READ, WRITE and FORCE each of them ([chapter 7](07-memory-s7-and-online.md#going-online)). A whole array or struct isn't a single value, so `READ results` gives `?`.
+Monitoring sees every element and field as its own variable, by path: `results[1].score`, `grid[2,3]` (no space after the comma), `summarize.result.total`. You can READ, WRITE and FORCE each of them ([chapter 8](08-memory-s7-and-online.md#going-online)). A whole array or struct isn't a single value, so `READ results` gives `?`.

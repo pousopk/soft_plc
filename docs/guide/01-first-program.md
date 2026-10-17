@@ -16,7 +16,7 @@ END_VAR
 END_PROGRAM
 ```
 
-- A file has exactly one **`PROGRAM`**: the code the PLC runs every cycle. It can also have any number of **`FUNCTION_BLOCK`s** ([chapter 5](05-function-blocks.md)) and **`TYPE`** blocks ([chapter 6](06-arrays-and-structs.md)), in any order.
+- A file has exactly one **`PROGRAM`**: the code the PLC runs every cycle. It can also have any number of **`FUNCTION_BLOCK`s** ([chapter 5](05-function-blocks.md)), **`FUNCTION`s** ([chapter 6](06-functions.md)) and **`TYPE`** blocks ([chapter 7](07-arrays-and-structs.md)), in any order.
 - Variables are declared in **`VAR … END_VAR`**: `name : TYPE;`. Several with the same type: `a, b, c : INT;`.
 - `AT %QX0.0` places a variable in the PLC's memory, here output bit 0.0. Variables without `AT` are internal memory.
 - Every statement ends with **`;`**, including `END_IF;`.

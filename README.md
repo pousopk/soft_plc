@@ -26,6 +26,7 @@ ctest --test-dir build --output-on-failure
 ./build/st_parse examples/function_blocks.st  # show how a program is parsed (and check it)
 ./build/st_parse -e "a := b + 3 * c;"
 ./build/soft_plc examples/inspection.st       # arrays and structs: four cameras' results in a DB
+./build/soft_plc --monitor examples/analog.st # functions: scaling analog inputs, then force rawPressure
 ```
 
 When a program stops (Ctrl+C or a runtime error), `soft_plc` prints the final value of every variable.
@@ -79,6 +80,8 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 - `PROGRAM … END_PROGRAM` with `VAR … END_VAR` blocks
 - `FUNCTION_BLOCK … END_FUNCTION_BLOCK` with `VAR_INPUT`, `VAR_OUTPUT` and `VAR`; instances (`t1 : TON;`), calls (`t1(IN := x, PT := T#2s);`) and outputs (`t1.Q`)
 - Standard blocks: `TON`, `TOF`, `TP`, `CTU`, `CTD`, `R_TRIG`, `F_TRIG`, `SR`, `RS`
+- `FUNCTION Name : TYPE … END_FUNCTION` with `VAR_INPUT` and temporary `VAR`, called in expressions by name (`Scale(raw := x, high := 10.0)`) or in order (`Scale(x, 0.0, 10.0)`); no memory between calls, no recursion
+- Standard functions: `ABS`, `SQRT`, `LN`, `LOG`, `EXP`, `SIN`, `COS`, `TAN`, `ASIN`, `ACOS`, `ATAN`, `EXPT`, `TRUNC`, `ROUND`, `CEIL`, `FLOOR`, `MIN`, `MAX`, `LIMIT`, `SEL`, `MUX`, and conversions `INT_TO_DINT`, `INT_TO_REAL`, `DINT_TO_INT`, `DINT_TO_REAL`, `REAL_TO_INT`, `REAL_TO_DINT`, `BOOL_TO_INT`, `BOOL_TO_DINT`, `INT_TO_BOOL`, `DINT_TO_BOOL`, `TIME_TO_DINT`, `DINT_TO_TIME`
 - Types `BOOL`, `INT`, `DINT`, `REAL`, `TIME`; initial values (`count : INT := 5;`); `AT %QX0.0` or `AT %DB1.DBW2` to place a variable in the process image or a data block
 - Arrays `ARRAY[1..10] OF INT`, also multi-dimensional `ARRAY[1..3, 0..4] OF REAL`; structs in `TYPE … STRUCT … END_STRUCT; END_TYPE`, nested in any combination; access like `line[i].start.x`; whole-array and whole-struct assignment; initial values `[1, 2, 3(0)]` and `(x := 1.0, y := 2.0)`; arrays and structs as function block inputs and outputs, and in data blocks with the S7 layout
 - Statements: `:=`, `IF/ELSIF/ELSE`, `CASE` (lists and ranges), `FOR … BY`, `WHILE`, `REPEAT … UNTIL`, `EXIT`, `RETURN`
@@ -91,7 +94,7 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 |---|---|
 | `src/core/` | Addresses, process image, program and I/O interfaces, scan cycle |
 | `src/stdlib/` | Standard function blocks in C++: timers, counters, edges, flip-flops |
-| `src/st/` | Structured Text: lexer, syntax tree, parser, analyzer (type checks), interpreter, bytecode compiler and VM, standard block bridge |
+| `src/st/` | Structured Text: lexer, syntax tree, parser, analyzer (type checks), interpreter, bytecode compiler and VM, standard blocks and standard functions |
 | `src/monitor/` | Online monitoring: request handling, TCP server and client |
 | `src/s7/` | S7 server (Snap7) sharing the process image with S7 clients |
 | `cmake/` | Snap7 build recipe and source patches |
@@ -110,7 +113,7 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 - **Memory model:** `%I`, `%Q`, `%M` areas and data blocks with bit, byte and word access.
 - **Data types:** BOOL, INT, DINT, REAL, TIME, arrays and structs (STRING is not supported yet).
 - **Structured Text:** lexer → parser → AST → type checking → tree-walking interpreter or bytecode compiler + VM.
-- **Standard library:** TON, TOF, TP, CTU, CTD, R_TRIG, F_TRIG, SR, RS.
+- **Standard library:** TON, TOF, TP, CTU, CTD, R_TRIG, F_TRIG, SR, RS; standard functions (ABS, SQRT, MIN, MAX, LIMIT, SEL, MUX, ROUND, conversions, …).
 - **Online monitoring:** watch and force variables while running.
 - **S7 server:** expose memory through Snap7 so `plc_gui` and `factory_sim` can connect.
 
@@ -124,3 +127,4 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 6. Snap7 server
 7. Bytecode compiler and VM, benchmarked against the tree-walking interpreter
 8. Arrays and structs, with the S7 memory layout for data blocks, and the programming guide
+9. FUNCTIONs and the standard functions (math, MIN/MAX/LIMIT/SEL/MUX, rounding, conversions)

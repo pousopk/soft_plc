@@ -196,6 +196,38 @@ struct Access {
     bool isPlainVariable() const { return instanceSlot == kNoSlot && selectors.empty(); }
 };
 
+// One argument of a call: `NAME := value`, or just `value` in a function
+// call that gives its arguments in order.
+struct CallArgument {
+    std::string name; // empty for an argument given by position
+    ExpressionPtr value;
+    SourceLocation location;
+    std::size_t slot = kNoSlot; // set by the analyzer: the input inside the instance or function
+};
+
+// The standard functions, built into the language (see src/st/functions.hpp).
+enum class BuiltinFunction {
+    None,
+    Abs, Sqrt, Ln, Log, Exp, Sin, Cos, Tan, Asin, Acos, Atan, Expt,
+    Trunc, Round, Ceil, Floor,
+    Min, Max, Limit, Sel, Mux,
+    Convert, // BOOL_TO_INT, DINT_TO_INT, REAL_TO_DINT, ...: from argumentTypes[0] to the result type
+};
+
+// A function call inside an expression: Scale(raw := r, low := 0.0) or MAX(a, b).
+struct CallExpression {
+    std::string name;
+    std::vector<CallArgument> arguments;
+
+    // Set by the analyzer: either a FUNCTION from the source file...
+    std::size_t functionIndex = kNoSlot; // index into CompilationUnit::functions
+    // ...or a standard function, with its arguments put in order and the
+    // type each one is converted to before the call.
+    BuiltinFunction builtin = BuiltinFunction::None;
+    std::vector<DataType> argumentTypes;
+    DataType resultType = DataType::Unknown; // for both kinds
+};
+
 struct UnaryExpression {
     UnaryOperator op;
     ExpressionPtr operand;
@@ -212,7 +244,7 @@ struct BinaryExpression {
 
 // One node of an expression tree: exactly one of the kinds above.
 struct Expression {
-    std::variant<Literal, Access, UnaryExpression, BinaryExpression> node;
+    std::variant<Literal, Access, CallExpression, UnaryExpression, BinaryExpression> node;
     SourceLocation location;
     DataType type = DataType::Unknown; // set by the analyzer: the type of the result
 };
@@ -274,14 +306,6 @@ struct RepeatStatement {
 
 struct ExitStatement {};
 struct ReturnStatement {};
-
-// One `NAME := value` inside a call.
-struct CallArgument {
-    std::string name;
-    ExpressionPtr value;
-    SourceLocation location;
-    std::size_t slot = kNoSlot; // set by the analyzer: the input inside the instance
-};
 
 // Calls a function block instance: t1(IN := start, PT := T#2s);
 struct CallStatement {
@@ -354,7 +378,7 @@ struct VariableDeclaration {
     std::size_t leaf = kNoSlot;         // where its leaves start in the instance; none for AT and FB variables
 };
 
-enum class PouKind { Program, FunctionBlock };
+enum class PouKind { Program, FunctionBlock, Function };
 
 // A Program Organization Unit: a PROGRAM or a FUNCTION_BLOCK. Both are
 // variables plus a body; a function block can have many instances, each
@@ -367,6 +391,10 @@ struct Pou {
     SourceLocation location;
     bool builtin = false;      // a standard block like TON, implemented in C++ (its body is empty)
     std::size_t leafCount = 0; // set by the analyzer: the leaves of all its variables
+    // FUNCTION only: the type it returns, and the variable that holds the
+    // result (named like the function, added by the parser as the last variable).
+    TypeSpec returnType;
+    std::size_t returnSlot = kNoSlot;
 };
 
 // A type declared in a TYPE block: a STRUCT, or another name for a type.
@@ -383,13 +411,14 @@ struct TypeDeclaration {
     SourceLocation location;
 };
 
-// Everything in one source file: types, any number of function blocks and one program.
+// Everything in one source file: types, functions, function blocks and one program.
 //
 // The analyzer stores pointers into it (to function blocks, types and
 // initial values), so a CompilationUnit must stay where it is or be moved as
 // a whole, never copied piece by piece. (It can't be copied anyway.)
 struct CompilationUnit {
     std::vector<TypeDeclaration> types;
+    std::vector<Pou> functions;
     std::vector<Pou> functionBlocks;
     Pou program;
     std::vector<std::unique_ptr<Type>> analyzedTypes; // owned here, created by the analyzer

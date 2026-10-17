@@ -22,7 +22,7 @@ constexpr std::initializer_list<TokenKind> blockEnds = {
     TokenKind::EndIf,    TokenKind::Elsif,  TokenKind::Else,      TokenKind::EndCase,    TokenKind::EndFor,
     TokenKind::EndWhile, TokenKind::Until,  TokenKind::EndRepeat, TokenKind::EndProgram, TokenKind::EndVar,
     TokenKind::EndFunctionBlock, TokenKind::Program, TokenKind::FunctionBlock, TokenKind::Type,
-    TokenKind::EndType, TokenKind::EndStruct,
+    TokenKind::EndType, TokenKind::EndStruct, TokenKind::Function, TokenKind::EndFunction,
 };
 
 ExpressionPtr makeExpression(decltype(Expression::node) node, SourceLocation location) {
@@ -59,6 +59,8 @@ public:
         while (!check(TokenKind::EndOfFile)) {
             if (check(TokenKind::Type)) {
                 typeBlock(unit.types);
+            } else if (check(TokenKind::Function)) {
+                unit.functions.push_back(pou(PouKind::Function));
             } else if (check(TokenKind::FunctionBlock)) {
                 unit.functionBlocks.push_back(pou(PouKind::FunctionBlock));
             } else if (check(TokenKind::Program)) {
@@ -68,7 +70,7 @@ public:
                 unit.program = pou(PouKind::Program);
                 haveProgram = true;
             } else {
-                fail(peek(), fmt::format("expected 'PROGRAM', 'FUNCTION_BLOCK' or 'TYPE', found {}", describe(peek())));
+                fail(peek(), fmt::format("expected 'PROGRAM', 'FUNCTION_BLOCK', 'FUNCTION' or 'TYPE', found {}", describe(peek())));
             }
         }
         if (!haveProgram) {
@@ -108,23 +110,46 @@ public:
 private:
     // ------------------------------------------------------------ Declarations
 
-    // PROGRAM Name ... END_PROGRAM  or  FUNCTION_BLOCK Name ... END_FUNCTION_BLOCK
+    // PROGRAM Name ... END_PROGRAM, FUNCTION_BLOCK Name ... END_FUNCTION_BLOCK
+    // or FUNCTION Name : Type ... END_FUNCTION
     Pou pou(PouKind kind) {
-        const bool isProgram = kind == PouKind::Program;
         Pou unit;
         unit.kind = kind;
-        unit.location = advance().location; // PROGRAM or FUNCTION_BLOCK
-        unit.name = expect(TokenKind::Identifier, isProgram ? "the program name after PROGRAM"
-                                                            : "the function block name after FUNCTION_BLOCK")
-                        .text;
+        unit.location = advance().location; // PROGRAM, FUNCTION_BLOCK or FUNCTION
+        const char* what = kind == PouKind::Program         ? "the program name after PROGRAM"
+                           : kind == PouKind::FunctionBlock ? "the function block name after FUNCTION_BLOCK"
+                                                            : "the function name after FUNCTION";
+        const Token& name = expect(TokenKind::Identifier, what);
+        unit.name = name.text;
+        if (kind == PouKind::Function) {
+            expect(TokenKind::Colon, fmt::format("':' and the type the function returns, as in FUNCTION {} : REAL",
+                                                 name.text));
+            unit.returnType = typeSpec();
+        }
         while (checkAny({TokenKind::Var, TokenKind::VarInput, TokenKind::VarOutput})) {
             varBlock(unit.variables);
         }
         unit.body = statementList({});
-        if (isProgram) {
-            expect(TokenKind::EndProgram, "'END_PROGRAM' at the end of the program");
-        } else {
+        switch (kind) {
+        case PouKind::Program: expect(TokenKind::EndProgram, "'END_PROGRAM' at the end of the program"); break;
+        case PouKind::FunctionBlock:
             expect(TokenKind::EndFunctionBlock, "'END_FUNCTION_BLOCK' at the end of the function block");
+            break;
+        case PouKind::Function: {
+            expect(TokenKind::EndFunction, "'END_FUNCTION' at the end of the function");
+            // The result is a variable named like the function: `Scale := ...;` sets it.
+            VariableDeclaration result;
+            result.name = unit.name;
+            result.typeSpec = unit.returnType;
+            if (unit.returnType.dimensions.empty()) {
+                result.type = elementaryTypeFromName(unit.returnType.name).value_or(DataType::Unknown);
+            }
+            result.section = VarSection::Output;
+            result.location = name.location;
+            unit.returnSlot = unit.variables.size();
+            unit.variables.push_back(std::move(result));
+            break;
+        }
         }
         return unit;
     }
@@ -600,6 +625,9 @@ private:
         case TokenKind::Identifier: {
             const auto location = token.location;
             const auto name = token.text;
+            if (peekNext().kind == TokenKind::LeftParen) {
+                return makeExpression(callExpression(), location);
+            }
             auto result = access();
             if (check(TokenKind::LeftParen)) {
                 fail(peek(), fmt::format("function block calls are statements: write '{}(...);' on its own, "
@@ -616,6 +644,33 @@ private:
         }
         default: fail(token, fmt::format("expected an expression, found {}", describe(token)));
         }
+    }
+
+    // NAME(arguments): either all by name (IN1 := a, IN2 := b) or all in order (a, b).
+    CallExpression callExpression() {
+        CallExpression call;
+        call.name = advance().text;
+        advance(); // '('
+        if (!check(TokenKind::RightParen)) {
+            const bool named = check(TokenKind::Identifier) && peekNext().kind == TokenKind::Assign;
+            do {
+                const auto location = peek().location;
+                const bool thisNamed = check(TokenKind::Identifier) && peekNext().kind == TokenKind::Assign;
+                if (thisNamed != named) {
+                    fail(peek(), fmt::format("in a call to {}, give either every argument with its name (IN := ...) or "
+                                             "none",
+                                             call.name));
+                }
+                std::string argumentName;
+                if (named) {
+                    argumentName = advance().text;
+                    advance(); // ':='
+                }
+                call.arguments.push_back(CallArgument{argumentName, expression(), location});
+            } while (match(TokenKind::Comma));
+        }
+        expect(TokenKind::RightParen, fmt::format("')' to close the call to {}", call.name));
+        return call;
     }
 
     // ------------------------------------------------------------ Token helpers

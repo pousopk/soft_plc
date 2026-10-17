@@ -171,7 +171,7 @@ TEST_CASE("Program syntax errors") {
         const char* messagePart;
     };
     const Case cases[] = {
-        {"x := 1;", "expected 'PROGRAM', 'FUNCTION_BLOCK' or 'TYPE', found 'x'"},
+        {"x := 1;", "expected 'PROGRAM', 'FUNCTION_BLOCK', 'FUNCTION' or 'TYPE', found 'x'"},
         {"", "expected a PROGRAM"},
         {"PROGRAM A END_PROGRAM PROGRAM B END_PROGRAM", "a file can only have one PROGRAM"},
         {"PROGRAM VAR END_VAR END_PROGRAM", "expected the program name"},
@@ -181,7 +181,7 @@ TEST_CASE("Program syntax errors") {
         {"PROGRAM P VAR x AT y : INT; END_VAR END_PROGRAM", "expected an address like %IX0.0 after AT"},
         {"PROGRAM P VAR 5 END_VAR END_PROGRAM", "expected a variable name or 'END_VAR'"},
         {"PROGRAM P x := 1;", "expected 'END_PROGRAM'"},
-        {"PROGRAM P END_PROGRAM x", "expected 'PROGRAM', 'FUNCTION_BLOCK' or 'TYPE', found 'x'"},
+        {"PROGRAM P END_PROGRAM x", "expected 'PROGRAM', 'FUNCTION_BLOCK', 'FUNCTION' or 'TYPE', found 'x'"},
     };
     for (const auto& c : cases) {
         CAPTURE(c.source);

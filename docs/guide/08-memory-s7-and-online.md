@@ -70,6 +70,7 @@ These stop the PLC while it runs:
 - an array index outside the bounds,
 - the watchdog (more than 1 000 000 loop rounds in one cycle),
 - a `FOR` with `BY 0`,
+- a `MUX` selector outside its inputs,
 - an `AT` address outside its area or data block.
 
 In STOP, the program no longer runs and **all outputs are switched off** (the safe state). The reason is printed with its line and column. Without `--monitor` or `--s7`, soft_plc then exits. With them, it stays up in STOP so connected tools can see what happened; S7 clients see the CPU in STOP.

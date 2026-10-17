@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -102,10 +103,26 @@ private:
     // variables the offset counts bits in the process image; for the rest it
     // counts leaves (see Type).
     struct Place {
-        Instance* instance;
-        const VariableDeclaration* variable;
+        Instance* instance = nullptr;
+        const VariableDeclaration* variable = nullptr;
         std::size_t leaf = 0;
         std::size_t bit = 0;
+    };
+
+    // A FUNCTION's memory. A function can't call itself, so it never runs
+    // twice at once, and one frame each is enough. It's reset to `initial`
+    // at every call: functions remember nothing between calls.
+    struct FunctionFrame {
+        std::unique_ptr<Instance> instance;
+        std::vector<Value> initial;
+    };
+
+    // One argument of a FUNCTION call, worked out before the call.
+    struct Argument {
+        std::size_t slot = 0;              // the input
+        const Type* aggregate = nullptr;   // an array or struct: copied from `from`
+        Value value;                       // otherwise: the value
+        Place from;
     };
 
     // What a statement asks its enclosing statements to do next.
@@ -124,6 +141,9 @@ private:
     void call(const CallStatement& s, Instance& self);
 
     Value evaluate(const Expression& expression, Instance& self);
+    Value callFunction(const CallExpression& call, Instance& self);
+    Value callBuiltin(const CallExpression& call, Instance& self, SourceLocation where);
+    Value invokeFunction(std::size_t index, std::span<const Argument> arguments);
     Value evaluateBinary(const BinaryExpression& binary, const Expression& expression, Instance& self);
 
     void initialize(Instance& instance, const Type& type, std::size_t leaf, const Initializer* initializer);
@@ -153,6 +173,7 @@ private:
 
     Engine engine_;
     std::unordered_map<const Pou*, Chunk> chunks_; // compiled code, per POU (Bytecode engine)
+    std::vector<FunctionFrame> functions_;         // one per CompilationUnit::functions
     // The VM's stack, shared by nested function block calls: each call uses
     // the part above its caller's. Fixed size, so pointers into it stay valid.
     std::vector<VmSlot> vmStack_;
