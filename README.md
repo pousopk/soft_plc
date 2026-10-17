@@ -2,11 +2,14 @@
 
 A software PLC written from scratch: a fixed-time scan cycle, a process image, and a Structured Text (IEC 61131-3) compiler and interpreter.
 
+**To write programs for it, start with the [programming guide](docs/guide/README.md).**
+
 ## Decisions
 
 - **Style:** IEC 61131-3 Structured Text syntax, with some Siemens touches such as DB-style memory.
 - **Role:** a headless engine first; the monitoring GUI is a separate part that connects to it.
 - **Execution:** a tree-walking interpreter first; a bytecode compiler and VM come later.
+- **Arrays and structs:** IEC syntax (`ARRAY[1..10] OF INT`, `TYPE … STRUCT`). Every value inside them is a separate "leaf", so indexing is arithmetic. Placed with `AT`, they use Siemens' standard-access layout, so S7 clients find fields at the offsets TIA Portal shows.
 
 ## Building and running
 
@@ -22,6 +25,7 @@ ctest --test-dir build --output-on-failure
 ./build/soft_plc examples/function_blocks.st  # function blocks, timers and counters
 ./build/st_parse examples/function_blocks.st  # show how a program is parsed (and check it)
 ./build/st_parse -e "a := b + 3 * c;"
+./build/soft_plc examples/inspection.st       # arrays and structs: four cameras' results in a DB
 ```
 
 When a program stops (Ctrl+C or a runtime error), `soft_plc` prints the final value of every variable.
@@ -59,7 +63,7 @@ Programs run on a **bytecode VM** by default: each POU is compiled once to instr
 ./build-release/st_bench examples/benchmark.st           # compare the engines' speed
 ```
 
-Measured on this machine (Release build, µs per cycle):
+Measured on this machine at milestone 7 (Release build, µs per cycle). Arrays and structs (milestone 8) added about 4% more instructions to `benchmark.st`, almost all of them in the tree-walker; the VM is unchanged.
 
 | Program | Tree-walker | Bytecode VM | Speed-up |
 |---|---|---|---|
@@ -76,6 +80,7 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 - `FUNCTION_BLOCK … END_FUNCTION_BLOCK` with `VAR_INPUT`, `VAR_OUTPUT` and `VAR`; instances (`t1 : TON;`), calls (`t1(IN := x, PT := T#2s);`) and outputs (`t1.Q`)
 - Standard blocks: `TON`, `TOF`, `TP`, `CTU`, `CTD`, `R_TRIG`, `F_TRIG`, `SR`, `RS`
 - Types `BOOL`, `INT`, `DINT`, `REAL`, `TIME`; initial values (`count : INT := 5;`); `AT %QX0.0` or `AT %DB1.DBW2` to place a variable in the process image or a data block
+- Arrays `ARRAY[1..10] OF INT`, also multi-dimensional `ARRAY[1..3, 0..4] OF REAL`; structs in `TYPE … STRUCT … END_STRUCT; END_TYPE`, nested in any combination; access like `line[i].start.x`; whole-array and whole-struct assignment; initial values `[1, 2, 3(0)]` and `(x := 1.0, y := 2.0)`; arrays and structs as function block inputs and outputs, and in data blocks with the S7 layout
 - Statements: `:=`, `IF/ELSIF/ELSE`, `CASE` (lists and ranges), `FOR … BY`, `WHILE`, `REPEAT … UNTIL`, `EXIT`, `RETURN`
 - Operators: `+ - * / MOD **`, `= <> < <= > >=`, `AND & OR XOR NOT`
 - Literals: `42`, `1_000`, `16#FF`, `2#1010`, `3.14`, `1.5E3`, `TRUE`, `FALSE`, `T#1m30s`; comments `(* … *)` and `//`
@@ -97,12 +102,13 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 | `tests/` | doctest unit tests, mirroring `src/` |
 | `docs/lessons/` | What each milestone teaches about PLCs and C++, with review questions |
 | `docs/cpp/` | The C++ in the finished code, one topic per lesson, with review questions |
+| `docs/guide/` | The programming guide: how to write programs for soft_plc (every example is compiled by the tests) |
 
 ## Components
 
 - **Scan cycle engine:** read inputs → run program → write outputs, fixed cycle time, watchdog, cycle statistics.
 - **Memory model:** `%I`, `%Q`, `%M` areas and data blocks with bit, byte and word access.
-- **Data types:** BOOL, INT, DINT, REAL, TIME (STRING, arrays and structs are not supported yet).
+- **Data types:** BOOL, INT, DINT, REAL, TIME, arrays and structs (STRING is not supported yet).
 - **Structured Text:** lexer → parser → AST → type checking → tree-walking interpreter or bytecode compiler + VM.
 - **Standard library:** TON, TOF, TP, CTU, CTD, R_TRIG, F_TRIG, SR, RS.
 - **Online monitoring:** watch and force variables while running.
@@ -117,3 +123,4 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 5. Online monitoring GUI
 6. Snap7 server
 7. Bytecode compiler and VM, benchmarked against the tree-walking interpreter
+8. Arrays and structs, with the S7 memory layout for data blocks, and the programming guide

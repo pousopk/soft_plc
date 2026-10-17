@@ -22,8 +22,10 @@ enum class TokenKind {
     Comma,      // ,
     DotDot,     // ..
     Dot,        // .  (as in t1.Q)
-    LeftParen,  // (
-    RightParen, // )
+    LeftParen,    // (
+    RightParen,   // )
+    LeftBracket,  // [
+    RightBracket, // ]
 
     Plus,  // +
     Minus, // -
@@ -47,6 +49,7 @@ enum class TokenKind {
     // Program structure
     Program, EndProgram, FunctionBlock, EndFunctionBlock,
     Var, VarInput, VarOutput, EndVar, At,
+    Type, EndType, Struct, EndStruct, Array,
     // Statements
     If, Then, Elsif, Else, EndIf,
     Case, Of, EndCase,

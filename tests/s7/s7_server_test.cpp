@@ -4,6 +4,7 @@
 #include "st/analyzer.hpp"
 #include "st/st_program.hpp"
 #include "support/engine.hpp"
+#include "util/file.hpp"
 #include <arpa/inet.h>
 #include <array>
 #include <bit>
@@ -295,4 +296,53 @@ TEST_CASE("The S7 demo program, controlled by an S7 client like plc_gui") {
 
     stop = true;
     scan.join();
+}
+
+TEST_CASE("A struct in a DB is where an S7 client expects it (examples/inspection.st)") {
+    const auto source = readFile(std::string(SOFT_PLC_SOURCE_DIR) + "/examples/inspection.st");
+    REQUIRE(source.has_value());
+    auto unit = st::compileProgram(*source).value();
+    ProcessImage image(1, 1, 1);
+    for (const auto& [number, size] : st::dataBlocksUsedBy(unit)) {
+        image.addDataBlock(number, size);
+    }
+    REQUIRE(image.dataBlock(10).size() == 72); // 4 results of 16 bytes, then 8 bytes of statistics
+
+    st::StProgram program(std::move(unit), {}, 1'000'000, testEngine());
+    struct : IoDriver {
+        void readInputs(ProcessImage&) override {}
+        void writeOutputs(const ProcessImage&) override {}
+    } io;
+    ScanCycle cycle(image, io, program, 10ms);
+    s7::S7Server server(image);
+    const auto port = freePort();
+    REQUIRE(server.start(port).has_value());
+
+    // 1.2 s of simulated time: two triggers, every 500 ms.
+    auto now = TimePoint{} + 1h;
+    for (int i = 0; i < 120; ++i) {
+        cycle.runOnce(now);
+        server.synchronize();
+        now += 10ms;
+    }
+
+    Client client(port);
+    const auto db = client.readDb(10, 0, 72);
+    const auto& interpreter = program.interpreter();
+    for (int cam = 1; cam <= 4; ++cam) {
+        CAPTURE(cam);
+        const auto base = static_cast<std::size_t>((cam - 1) * 16);
+        const auto path = "cameras[" + std::to_string(cam) + "]";
+        CHECK(((db[base] & 1) != 0) == std::get<bool>(*interpreter.valueOf(path + ".ok", image)));
+        CHECK(((db[base] & 2) != 0) == std::get<bool>(*interpreter.valueOf(path + ".nok", image)));
+        CHECK(db[base + 2] * 256 + db[base + 3] == 2); // sequence: two results so far
+        CHECK(realFrom(db, base + 4) == static_cast<float>(std::get<double>(*interpreter.valueOf(path + ".score", image))));
+        CHECK(realFrom(db, base + 8) == static_cast<float>(std::get<double>(*interpreter.valueOf(path + ".posX", image))));
+    }
+    CHECK(db[64] * 256 + db[65] == 2); // stats.inspected
+    const auto rejected = std::get<std::int64_t>(*interpreter.valueOf("stats.rejected", image));
+    CHECK(db[66] * 256 + db[67] == rejected);
+    // stats.lastTen[0] and [1] are bits 0 and 1 of byte 68; one is set for each cycle with a reject.
+    CHECK(((db[68] & 1) + ((db[68] >> 1) & 1)) == rejected);
+    CHECK(db[70] * 256 + db[71] == 2); // stats.next
 }

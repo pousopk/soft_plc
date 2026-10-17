@@ -12,11 +12,11 @@ namespace {
 int stackEffect(Op op) {
     switch (op) {
     case Op::PushInt: case Op::PushReal:
-    case Op::LoadBool: case Op::LoadInt: case Op::LoadReal: case Op::LoadAt:
+    case Op::LoadBool: case Op::LoadInt: case Op::LoadReal:
     case Op::LoadMemberBool: case Op::LoadMemberInt: case Op::LoadMemberReal:
     case Op::LoadTemp:
         return +1;
-    case Op::StoreBool: case Op::StoreInt16: case Op::StoreInt32: case Op::StoreReal: case Op::StoreAt:
+    case Op::StoreBool: case Op::StoreInt16: case Op::StoreInt32: case Op::StoreReal:
     case Op::StoreMemberBool: case Op::StoreMemberInt16: case Op::StoreMemberInt32: case Op::StoreMemberReal:
     case Op::StoreTemp:
     case Op::AddI: case Op::SubI: case Op::MulI: case Op::DivI: case Op::ModI:
@@ -27,8 +27,11 @@ int stackEffect(Op op) {
     case Op::And: case Op::Or: case Op::Xor:
     case Op::JumpIfFalse: case Op::JumpIfTrue:
         return -1;
+    case Op::StorePlace: case Op::CopyPlace:
+        return -2;
     default:
-        return 0; // NegI, NegR, Wrap*, IntToReal, Not, Jump, LoopTick, ForTest, CheckStep, Call, Return
+        return 0; // NegI, NegR, Wrap*, IntToReal, Not, Jump, LoopTick, ForTest, CheckStep, Call, Return,
+                  // Index, LoadPlace
     }
 }
 
@@ -85,8 +88,7 @@ private:
     void expression(const Expression& e) {
         std::visit(Overloaded{
                        [&](const Literal& literal) { this->literal(literal, e.location); },
-                       [&](const VariableRef& variable) { load(variable.slot, e.location); },
-                       [&](const MemberRef& member) { loadMember(member, e.location); },
+                       [&](const Access& access) { load(access, e.location); },
                        [&](const UnaryExpression& unary) {
                            expression(*unary.operand);
                            if (unary.op == UnaryOperator::Not) {
@@ -112,24 +114,70 @@ private:
                    literal.value);
     }
 
-    void load(std::size_t slot, SourceLocation where) {
-        const auto& variable = pou_.variables[slot];
-        if (variable.address) {
-            emit(Op::LoadAt, where, slotIndex(slot));
-        } else if (variable.type == DataType::Bool) {
-            emit(Op::LoadBool, where, slotIndex(slot));
-        } else if (variable.type == DataType::Real) {
-            emit(Op::LoadReal, where, slotIndex(slot));
-        } else {
-            emit(Op::LoadInt, where, slotIndex(slot));
+    // ------------------------------------------------------------ Accesses
+
+    // A plain variable of this POU, as an Access (for FOR loop variables).
+    Access variableAccess(std::size_t slot) const {
+        Access access;
+        access.name = pou_.variables[slot].name;
+        access.slot = slot;
+        access.type = pou_.variables[slot].typeInfo;
+        return access;
+    }
+
+    const VariableDeclaration& variableOf(const Access& access) const {
+        const Pou& owner = access.instanceSlot == kNoSlot ? pou_ : *pou_.variables[access.instanceSlot].functionBlock;
+        return owner.variables[access.slot];
+    }
+
+    // Accesses with a fixed offset into memory that isn't in the process
+    // image get the fast instructions; the rest use a place.
+    bool isDirect(const Access& access) const { return access.dynamic.empty() && !variableOf(access).address; }
+
+    std::uint32_t addPlace(const Access& access) {
+        chunk_.places.push_back(PlaceInfo{access.instanceSlot, access.slot, access.leafOffset, access.bitOffset, access.type});
+        return static_cast<std::uint32_t>(chunk_.places.size() - 1);
+    }
+
+    // Pushes the run-time part of an access's offset: each index, checked
+    // and multiplied by its stride, all added up (0 when there's none).
+    void pushOffset(const Access& access, SourceLocation where) {
+        const bool located = variableOf(access).address.has_value();
+        if (access.dynamic.empty()) {
+            emit(Op::PushInt, where, 0, 0, 0);
+            return;
+        }
+        for (std::size_t i = 0; i < access.dynamic.size(); ++i) {
+            const auto& term = access.dynamic[i];
+            expression(*term.index);
+            chunk_.indices.push_back(IndexInfo{term.bounds, located ? term.bitStride : term.leafStride});
+            emit(Op::Index, term.index->location, static_cast<std::uint32_t>(chunk_.indices.size() - 1));
+            if (i > 0) {
+                emit(Op::AddI, where);
+            }
         }
     }
 
-    void loadMember(const MemberRef& member, SourceLocation where) {
-        const auto type = memberType(member.instanceSlot, member.memberSlot);
-        const Op op = type == DataType::Bool ? Op::LoadMemberBool : type == DataType::Real ? Op::LoadMemberReal
-                                                                                           : Op::LoadMemberInt;
-        emit(op, where, slotIndex(member.instanceSlot), slotIndex(member.memberSlot));
+    void load(const Access& access, SourceLocation where) {
+        const auto& variable = variableOf(access);
+        const auto type = access.type->elementary;
+        if (!isDirect(access)) {
+            pushOffset(access, where);
+            emit(Op::LoadPlace, where, addPlace(access));
+            return;
+        }
+        const auto leaf = slotIndex(variable.leaf + access.leafOffset);
+        if (access.instanceSlot != kNoSlot) {
+            const Op op = type == DataType::Bool ? Op::LoadMemberBool : type == DataType::Real ? Op::LoadMemberReal
+                                                                                               : Op::LoadMemberInt;
+            emit(op, where, slotIndex(access.instanceSlot), leaf);
+        } else if (type == DataType::Bool) {
+            emit(Op::LoadBool, where, leaf);
+        } else if (type == DataType::Real) {
+            emit(Op::LoadReal, where, leaf);
+        } else {
+            emit(Op::LoadInt, where, leaf);
+        }
     }
 
     DataType memberType(std::size_t instanceSlot, std::size_t memberSlot) const {
@@ -187,28 +235,42 @@ private:
 
     // ------------------------------------------------------------ Storing
 
-    // Pops the top of the stack into a variable of this POU.
-    void store(std::size_t slot, SourceLocation where) {
-        const auto& variable = pou_.variables[slot];
-        if (variable.address) {
-            emit(Op::StoreAt, where, slotIndex(slot));
+    // Pops the top of the stack into what `access` points to. The offset of
+    // a place is computed here, after the value, like the tree-walker does.
+    void store(const Access& access, SourceLocation where) {
+        const auto& variable = variableOf(access);
+        if (!isDirect(access)) {
+            pushOffset(access, where);
+            emit(Op::StorePlace, where, addPlace(access));
             return;
         }
-        switch (variable.type) {
-        case DataType::Bool: emit(Op::StoreBool, where, slotIndex(slot)); break;
-        case DataType::Int: emit(Op::StoreInt16, where, slotIndex(slot)); break;
-        case DataType::Real: emit(Op::StoreReal, where, slotIndex(slot)); break;
-        default: emit(Op::StoreInt32, where, slotIndex(slot)); break; // DINT, TIME
+        const auto leaf = slotIndex(variable.leaf + access.leafOffset);
+        if (access.instanceSlot != kNoSlot) {
+            storeMember(access.instanceSlot, leaf, access.type->elementary, where);
+            return;
+        }
+        switch (access.type->elementary) {
+        case DataType::Bool: emit(Op::StoreBool, where, leaf); break;
+        case DataType::Int: emit(Op::StoreInt16, where, leaf); break;
+        case DataType::Real: emit(Op::StoreReal, where, leaf); break;
+        default: emit(Op::StoreInt32, where, leaf); break; // DINT, TIME
         }
     }
 
-    void storeMember(std::size_t instanceSlot, std::size_t memberSlot, SourceLocation where) {
-        const auto type = memberType(instanceSlot, memberSlot);
+    void storeMember(std::size_t instanceSlot, std::uint32_t leaf, DataType type, SourceLocation where) {
         const Op op = type == DataType::Bool   ? Op::StoreMemberBool
                       : type == DataType::Int  ? Op::StoreMemberInt16
                       : type == DataType::Real ? Op::StoreMemberReal
                                                : Op::StoreMemberInt32;
-        emit(op, where, slotIndex(instanceSlot), slotIndex(memberSlot));
+        emit(op, where, slotIndex(instanceSlot), leaf);
+    }
+
+    // target := source, for whole arrays and structs.
+    void copy(const Access& source, const Access& target, SourceLocation where) {
+        pushOffset(source, where);
+        pushOffset(target, where);
+        const auto from = addPlace(source);
+        emit(Op::CopyPlace, where, from, addPlace(target));
     }
 
     // ------------------------------------------------------------ Statements
@@ -220,16 +282,30 @@ private:
     }
 
     void statement(const Assignment& s, SourceLocation where) {
+        if (s.target.type->isAggregate()) {
+            copy(std::get<Access>(s.value->node), s.target, where);
+            return;
+        }
         expression(*s.value);
-        convertIfNeeded(s.value->type, pou_.variables[s.slot].type, where);
-        store(s.slot, where);
+        convertIfNeeded(s.value->type, s.target.type->elementary, where);
+        store(s.target, where);
     }
 
     void statement(const CallStatement& s, SourceLocation where) {
         for (const auto& argument : s.arguments) {
+            const auto& input = pou_.variables[s.instanceSlot].functionBlock->variables[argument.slot];
+            if (input.typeInfo->isAggregate()) {
+                Access target;
+                target.name = input.name;
+                target.instanceSlot = s.instanceSlot;
+                target.slot = argument.slot;
+                target.type = input.typeInfo;
+                copy(std::get<Access>(argument.value->node), target, argument.location);
+                continue;
+            }
             expression(*argument.value);
             convertIfNeeded(argument.value->type, memberType(s.instanceSlot, argument.slot), argument.location);
-            storeMember(s.instanceSlot, argument.slot, argument.location);
+            storeMember(s.instanceSlot, slotIndex(input.leaf), input.type, argument.location);
         }
         emit(Op::Call, where, slotIndex(s.instanceSlot));
     }
@@ -292,6 +368,7 @@ private:
 
     void statement(const ForStatement& s, SourceLocation where) {
         const auto& variable = pou_.variables[s.slot];
+        const auto loopVariable = variableAccess(s.slot);
         const auto to = newTemp();
         const auto step = newTemp();
 
@@ -306,10 +383,10 @@ private:
         emit(Op::StoreTemp, where, step);
         emit(Op::CheckStep, where, step);
         expression(*s.from);
-        store(s.slot, where);
+        store(loopVariable, where);
 
         const auto top = here();
-        load(s.slot, where);
+        load(loopVariable, where);
         emit(Op::ForTest, where, to, step);
         const auto exit = emit(Op::JumpIfFalse, where);
         emit(Op::LoopTick, where);
@@ -317,11 +394,11 @@ private:
         exits_.emplace_back();
         statements(s.body);
 
-        load(s.slot, where);
+        load(loopVariable, where);
         emit(Op::LoadTemp, where, step);
         emit(Op::AddI, where);
         wrapFor(variable.type, where);
-        store(s.slot, where);
+        store(loopVariable, where);
         emit(Op::Jump, where, static_cast<std::uint32_t>(top));
 
         patchJump(exit, here());
@@ -386,8 +463,6 @@ const char* opName(Op op) {
     case Op::StoreInt16: return "StoreInt16";
     case Op::StoreInt32: return "StoreInt32";
     case Op::StoreReal: return "StoreReal";
-    case Op::LoadAt: return "LoadAt";
-    case Op::StoreAt: return "StoreAt";
     case Op::LoadMemberBool: return "LoadMemberBool";
     case Op::LoadMemberInt: return "LoadMemberInt";
     case Op::LoadMemberReal: return "LoadMemberReal";
@@ -397,6 +472,10 @@ const char* opName(Op op) {
     case Op::StoreMemberReal: return "StoreMemberReal";
     case Op::LoadTemp: return "LoadTemp";
     case Op::StoreTemp: return "StoreTemp";
+    case Op::Index: return "Index";
+    case Op::LoadPlace: return "LoadPlace";
+    case Op::StorePlace: return "StorePlace";
+    case Op::CopyPlace: return "CopyPlace";
     case Op::AddI: return "AddI";
     case Op::SubI: return "SubI";
     case Op::MulI: return "MulI";
@@ -453,11 +532,11 @@ std::string disassemble(const Chunk& chunk) {
         case Op::PushReal: operands = fmt::format("{}", std::bit_cast<double>(in.imm)); break;
         case Op::LoadMemberBool: case Op::LoadMemberInt: case Op::LoadMemberReal:
         case Op::StoreMemberBool: case Op::StoreMemberInt16: case Op::StoreMemberInt32: case Op::StoreMemberReal:
-        case Op::ForTest:
+        case Op::ForTest: case Op::CopyPlace:
             operands = fmt::format("{} {}", in.a, in.b);
             break;
         case Op::LoadBool: case Op::LoadInt: case Op::LoadReal: case Op::StoreBool: case Op::StoreInt16:
-        case Op::StoreInt32: case Op::StoreReal: case Op::LoadAt: case Op::StoreAt: case Op::LoadTemp:
+        case Op::StoreInt32: case Op::StoreReal: case Op::Index: case Op::LoadPlace: case Op::StorePlace: case Op::LoadTemp:
         case Op::StoreTemp: case Op::Jump: case Op::JumpIfFalse: case Op::JumpIfTrue: case Op::CheckStep:
         case Op::Call:
             operands = fmt::format("{}", in.a);

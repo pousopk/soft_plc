@@ -1,0 +1,55 @@
+# plc_gui config for examples/inspection.st, running in soft_plc:
+#
+#   ./build/soft_plc --s7 examples/inspection.st               # this repo
+#   ./build/plc_gui --config <path to this file>               # in ~/code/plc_gui
+#
+# The offsets are those of the Result and Stats structs in DB10 (see the
+# comment at the top of inspection.st). plc_gui always connects to port 102,
+# so soft_plc needs the rights to use it (see the soft_plc README).
+plc:
+  name: "soft_plc inspection"
+  ip: "127.0.0.1"
+  rack: 0
+  slot: 1
+  connect_timeout_ms: 2000
+  reconnect_backoff_ms: [500, 1000, 2000, 5000]
+
+tags:
+  - { id: cam1_ok,    db: 10, type: bool, offset: 0,  bit: 0, update_interval_ms: 100, label: "Camera 1 OK" }
+  - { id: cam1_seq,   db: 10, type: int,  offset: 2,  update_interval_ms: 100, label: "Camera 1 sequence" }
+  - { id: cam1_score, db: 10, type: real, offset: 4,  update_interval_ms: 100, label: "Camera 1 score" }
+  - { id: cam2_ok,    db: 10, type: bool, offset: 16, bit: 0, update_interval_ms: 100, label: "Camera 2 OK" }
+  - { id: cam2_score, db: 10, type: real, offset: 20, update_interval_ms: 100, label: "Camera 2 score" }
+  - { id: cam3_ok,    db: 10, type: bool, offset: 32, bit: 0, update_interval_ms: 100, label: "Camera 3 OK" }
+  - { id: cam3_score, db: 10, type: real, offset: 36, update_interval_ms: 100, label: "Camera 3 score" }
+  - { id: cam4_ok,    db: 10, type: bool, offset: 48, bit: 0, update_interval_ms: 100, label: "Camera 4 OK" }
+  - { id: cam4_score, db: 10, type: real, offset: 52, update_interval_ms: 100, label: "Camera 4 score" }
+  - { id: inspected,  db: 10, type: int,  offset: 64, update_interval_ms: 500, label: "Inspected" }
+  - { id: rejected,   db: 10, type: int,  offset: 66, update_interval_ms: 500, label: "Rejected" }
+
+panels:
+  - title: "Cameras"
+    layout: vertical
+    widgets:
+      - { type: led_indicator, tag: cam1_ok, label: "Camera 1" }
+      - { type: text_display, tag: cam1_score, label: "Score 1", format: "%.0f" }
+      - { type: text_display, tag: cam1_seq, label: "Sequence 1", format: "%.0f" }
+      - { type: led_indicator, tag: cam2_ok, label: "Camera 2" }
+      - { type: text_display, tag: cam2_score, label: "Score 2", format: "%.0f" }
+      - { type: led_indicator, tag: cam3_ok, label: "Camera 3" }
+      - { type: text_display, tag: cam3_score, label: "Score 3", format: "%.0f" }
+      - { type: led_indicator, tag: cam4_ok, label: "Camera 4" }
+      - { type: text_display, tag: cam4_score, label: "Score 4", format: "%.0f" }
+  - title: "Statistics"
+    layout: vertical
+    widgets:
+      - { type: text_display, tag: inspected, label: "Inspected", format: "%.0f" }
+      - { type: text_display, tag: rejected, label: "Rejected", format: "%.0f" }
+
+logging:
+  sinks:
+    - { id: csv_main, type: csv, path: "logs/soft_plc_inspection.csv" }
+  rules:
+    - tags: [cam1_score, cam2_score, cam3_score, cam4_score, rejected]
+      interval_ms: 500
+      sinks: [csv_main]

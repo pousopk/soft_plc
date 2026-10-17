@@ -12,7 +12,7 @@ How the PLC's memory for variables is laid out, how values are computed without 
 // src/st/interpreter.cpp
 struct Instance {
     const Pou* type = nullptr;                          // which PROGRAM/FUNCTION_BLOCK this is
-    std::vector<Value> values;                          // one per variable, in declaration order
+    std::vector<Value> values;                          // the leaves of every variable (see below)
     std::vector<std::unique_ptr<Instance>> children;    // one per variable; set only for FB instances
     std::unique_ptr<NativeBlock> native;                // set only for TON, CTU, ...
 };
@@ -22,15 +22,16 @@ For this program:
 
 ```
 PROGRAM Main
-VAR  count : INT;  fast : Blinker;  t1 : TON;  END_VAR
+VAR  count : INT;  pos : ARRAY[1..2] OF REAL;  fast : Blinker;  t1 : TON;  END_VAR
 ```
 
 the interpreter builds:
 
 ```
 root (Main)
- ├── values:   [count=0, -, -]
- └── children: [null, ─────┐, ──────┐]
+ ├── values:   [count, pos[1], pos[2]]       leaves 0, 1, 2
+ └── children: [null, null, ─────┐, ──────┐]  one per variable
+                                │        │
                            │        │
               Instance(Blinker)   Instance(TON)
                values: [...]       values: [IN, PT, Q, ET]
@@ -39,18 +40,23 @@ root (Main)
 
 This mirrors a Siemens PLC exactly: each FB instance has its own **instance memory**, and multi-instances live inside their parent's.
 
-### Slots instead of names
-The analyzer replaces every name with an **index**:
+### Leaves instead of names
+Every BOOL, INT, DINT, REAL or TIME inside a variable is one **leaf**: an INT is 1 leaf, `ARRAY[1..2] OF REAL` is 2, an array of 10 structs with 3 fields is 30. The analyzer gives each variable its first leaf (`VariableDeclaration::leaf`) and turns every access into numbers:
 
 ```cpp
-struct VariableRef {
-    std::string name;
-    std::size_t slot = kNoSlot; // set by the analyzer: index into the POU's variables
+struct Access {
+    std::string name;                    // as written: pos
+    std::vector<Selector> selectors;     //             [2]
+    std::size_t slot = kNoSlot;          // set by the analyzer: which variable
+    std::size_t leafOffset = 0;          //   the fixed part of the offset inside it
+    std::vector<IndexTerm> dynamic;      //   indices only known at run time
+    std::size_t directLeaf = kNoSlot;    //   the final leaf, when it's fixed
+    ...
 };
 constexpr std::size_t kNoSlot = std::numeric_limits<std::size_t>::max();
 ```
 
-At run time, reading `count` is `self.values[slot]`, a direct array access, with no string comparison and no map lookup. Doing the slow work (finding names) **once, before running** is the theme of both engines. `kNoSlot` is the largest possible `size_t`, a value that can never be a real index, so "not resolved yet" is visible in a debugger.
+At run time, reading `count` or `pos[2]` is `self.values[directLeaf]`, a direct array access, with no string comparison and no map lookup. `pos[i]` adds `(i - 1) × stride` to the fixed offset, after checking `i` is inside the bounds. Doing the slow work (finding names) **once, before running** is the theme of both engines. `kNoSlot` is the largest possible `size_t`, a value that can never be a real index, so "not resolved yet" is visible in a debugger.
 
 ### Pointers into the tree, and why `CompilationUnit` is on the heap
 `Instance::type` and `VariableDeclaration::functionBlock` are raw `const Pou*` pointers into the `CompilationUnit`. Raw pointers here mean **"I use it, I don't own it"**. The danger is the thing they point to moving:
@@ -297,7 +303,7 @@ Each POU is compiled once, and its chunk is found through the POU's **address**,
 
 ## Review questions
 
-**1.** Why does reading a variable at run time use `self.values[slot]` instead of looking the name up in a `std::map<std::string, Value>`?
+**1.** Why does reading a variable at run time use `self.values[directLeaf]` instead of looking the name up in a `std::map<std::string, Value>`?
 <details><summary>Answer</summary>
 
 Speed. The analyzer resolves every name to an index once, before the program runs. At run time a vector index is one memory access; a map lookup means comparing strings at every step, every cycle.

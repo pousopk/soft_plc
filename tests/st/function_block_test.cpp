@@ -127,7 +127,7 @@ TEST_CASE("A function block definition, an instance and a call") {
                                        "      Argument PT\n"
                                        "        Time T#1s\n"
                                        "    Assignment x\n"
-                                       "      Member c.total\n") != std::string::npos);
+                                       "      Access c.total\n") != std::string::npos);
 }
 
 TEST_CASE("A call can have no arguments") {
@@ -142,12 +142,11 @@ TEST_CASE("Function block syntax errors") {
         const char* messagePart;
     };
     const Case cases[] = {
-        {"t.IN := TRUE;", "can't assign to a member of 't'"},
         {"x := t(IN := TRUE);", "function block calls are statements"},
         {"t(IN TRUE);", "expected ':=' after 'IN'"},
         {"t(IN := TRUE;", "expected ')' to close the call"},
         {"t(IN := TRUE)", "expected ';' after the call"},
-        {"x := t.;", "expected a member name after 't.'"},
+        {"x := t.;", "expected a name after 't.'"},
     };
     for (const auto& c : cases) {
         CAPTURE(c.source);
@@ -171,10 +170,12 @@ TEST_CASE("Function block rules are checked") {
     };
     const Case cases[] = {
         {"PROGRAM P VAR c : Missing; END_VAR END_PROGRAM",
-         "unknown type 'Missing' (not BOOL, INT, DINT, REAL, TIME or a known function block)"},
+         "unknown type 'Missing' (not BOOL, INT, DINT, REAL, TIME, a TYPE or a function block)"},
         {"PROGRAM P VAR x : INT; END_VAR x(); END_PROGRAM", "'x' is not a function block instance, so it can't be called"},
         {"PROGRAM P VAR x, y : INT; END_VAR y := x.Q; END_PROGRAM",
-         "'x' is not a function block instance, so it has no members"},
+         "'x' is not a function block instance or a struct, so it has no members"},
+        {"PROGRAM P VAR t : TON; END_VAR t.IN := TRUE; END_PROGRAM",
+         "can't assign to 't.IN': set inputs in the call, like t(IN := ...); outputs are read-only"},
         {"PROGRAM P VAR t : TON; END_VAR t(START := TRUE); END_PROGRAM", "TON has no input called 'START'"},
         {"PROGRAM P VAR t : TON; END_VAR t(Q := TRUE); END_PROGRAM",
          "'Q' is an output of TON: read it after the call as t.Q"},
@@ -197,7 +198,7 @@ TEST_CASE("Function block rules are checked") {
         {"FUNCTION_BLOCK F VAR x AT %MW0 : INT; END_VAR END_FUNCTION_BLOCK PROGRAM P END_PROGRAM",
          "AT can only be used in the PROGRAM, not inside function block 'F'"},
         {"FUNCTION_BLOCK F VAR_INPUT t : TON; END_VAR END_FUNCTION_BLOCK PROGRAM P END_PROGRAM",
-         "inputs and outputs must be BOOL, INT, DINT, REAL or TIME, not function blocks"},
+         "inputs and outputs can't be function block instances"},
         {"FUNCTION_BLOCK TON END_FUNCTION_BLOCK PROGRAM P END_PROGRAM",
          "'TON' is a standard function block; choose another name"},
         {"FUNCTION_BLOCK F END_FUNCTION_BLOCK FUNCTION_BLOCK F END_FUNCTION_BLOCK PROGRAM P END_PROGRAM",

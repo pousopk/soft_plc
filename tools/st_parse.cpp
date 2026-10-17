@@ -31,7 +31,8 @@ int reportError(const softplc::st::Diagnostic& diagnostic, std::string_view sour
 bool isWholeFile(std::string_view source) {
     const auto tokens = softplc::st::tokenize(source);
     return tokens && (tokens->front().kind == softplc::st::TokenKind::Program ||
-                      tokens->front().kind == softplc::st::TokenKind::FunctionBlock);
+                      tokens->front().kind == softplc::st::TokenKind::FunctionBlock ||
+                      tokens->front().kind == softplc::st::TokenKind::Type);
 }
 
 } // namespace

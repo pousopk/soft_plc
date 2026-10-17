@@ -1,5 +1,7 @@
 # Lesson 2: Reading Structured Text
 
+> **Later change:** since milestone 8 (arrays and structs), `VariableRef` and `MemberRef` are replaced by one node, `Access`, which also covers `a[i]` and `p.x`. See [lesson 8](08-arrays-and-structs.md).
+
 Milestone 2 teaches the PLC to **read** Structured Text: it turns text like `a := b + 3 * c;` into a tree the program can work with. It doesn't **run** the code yet; that's milestone 3.
 
 ```

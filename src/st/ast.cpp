@@ -1,5 +1,6 @@
 #include "st/ast.hpp"
 #include "util/overloaded.hpp"
+#include "util/text.hpp"
 #include <fmt/format.h>
 
 namespace softplc::st {
@@ -48,9 +49,9 @@ public:
                                                                                                 : "Integer";
                            line(depth, fmt::format("{} {}", kind, formatLiteral(literal)));
                        },
-                       [&](const VariableRef& variable) { line(depth, fmt::format("Variable {}", variable.name)); },
-                       [&](const MemberRef& member) {
-                           line(depth, fmt::format("Member {}.{}", member.instance, member.member));
+                       [&](const Access& access) {
+                           line(depth, fmt::format("{} {}", access.selectors.empty() ? "Variable" : "Access",
+                                                   formatAccess(access)));
                        },
                        [&](const UnaryExpression& unary) {
                            line(depth, fmt::format("Unary {}", operatorSymbol(unary.op)));
@@ -85,7 +86,7 @@ public:
     void statement(const Statement& statement, int depth) {
         std::visit(Overloaded{
                        [&](const Assignment& s) {
-                           line(depth, fmt::format("Assignment {}", s.target));
+                           line(depth, fmt::format("Assignment {}", formatAccess(s.target)));
                            expression(*s.value, depth + 1);
                        },
                        [&](const IfStatement& s) {
@@ -165,16 +166,26 @@ public:
         labelled(1, "Body", pou.body);
     }
 
+    void typeDeclaration(const TypeDeclaration& type) {
+        if (!type.isStruct) {
+            line(0, fmt::format("Type {} : {}", type.name, formatTypeSpec(type.alias)));
+            return;
+        }
+        line(0, fmt::format("Type {} : Struct", type.name));
+        for (const auto& field : type.fields) {
+            line(1, declaration(field));
+        }
+    }
+
 private:
     static std::string declaration(const VariableDeclaration& variable) {
         std::string text = variable.name;
         if (variable.address) {
             text += " AT " + variable.address->toString();
         }
-        text += " : ";
-        text += variable.type == DataType::FunctionBlock ? variable.typeName : dataTypeName(variable.type);
+        text += " : " + formatTypeSpec(variable.typeSpec);
         if (variable.initialValue) {
-            text += " := " + formatExpression(*variable.initialValue);
+            text += " := " + formatInitializer(*variable.initialValue);
         }
         return text;
     }
@@ -194,8 +205,77 @@ const char* dataTypeName(DataType type) {
     case DataType::Time: return "TIME";
     case DataType::AnyInt: return "integer literal";
     case DataType::FunctionBlock: return "function block";
+    case DataType::Array: return "ARRAY";
+    case DataType::Struct: return "STRUCT";
     }
     return "unknown";
+}
+
+std::optional<DataType> elementaryTypeFromName(std::string_view name) {
+    const auto upper = toUpper(name);
+    if (upper == "BOOL") return DataType::Bool;
+    if (upper == "INT") return DataType::Int;
+    if (upper == "DINT") return DataType::DInt;
+    if (upper == "REAL") return DataType::Real;
+    if (upper == "TIME") return DataType::Time;
+    return std::nullopt;
+}
+
+std::string formatTypeSpec(const TypeSpec& spec) {
+    // Elementary types in their usual spelling; other names as written.
+    const auto elementary = elementaryTypeFromName(spec.name);
+    const std::string name = elementary ? dataTypeName(*elementary) : spec.name;
+    if (spec.dimensions.empty()) {
+        return name;
+    }
+    std::string text = "ARRAY[";
+    for (std::size_t i = 0; i < spec.dimensions.size(); ++i) {
+        text += fmt::format("{}{}..{}", i == 0 ? "" : ", ", spec.dimensions[i].low, spec.dimensions[i].high);
+    }
+    return text + "] OF " + name;
+}
+
+const Type::Field* Type::field(std::string_view fieldName) const {
+    const auto upper = toUpper(fieldName);
+    for (const auto& f : fields) {
+        if (toUpper(f.name) == upper) {
+            return &f;
+        }
+    }
+    return nullptr;
+}
+
+const Type* elementaryType(DataType type) {
+    // One shared Type per elementary type, built on first use.
+    static const auto types = [] {
+        std::vector<Type> list;
+        for (const auto t : {DataType::Bool, DataType::Int, DataType::DInt, DataType::Real, DataType::Time}) {
+            Type entry;
+            entry.kind = Type::Kind::Elementary;
+            entry.name = dataTypeName(t);
+            entry.elementary = t;
+            entry.bitSize = t == DataType::Bool ? 1 : t == DataType::Int ? 16 : 32;
+            entry.leaves.push_back(Type::Leaf{t, 0, ""});
+            list.push_back(std::move(entry));
+        }
+        return list;
+    }();
+    for (const auto& t : types) {
+        if (t.elementary == type) {
+            return &t;
+        }
+    }
+    return nullptr;
+}
+
+bool sameType(const Type& a, const Type& b) {
+    if (&a == &b) {
+        return true;
+    }
+    // Two separately written ARRAY[1..3] OF INT are the same type; two
+    // different STRUCT declarations never are, even with the same fields.
+    return a.kind == Type::Kind::Array && b.kind == Type::Kind::Array && a.dimensions == b.dimensions &&
+           sameType(*a.element, *b.element);
 }
 
 std::string formatValue(const Value& value) {
@@ -261,12 +341,101 @@ const char* operatorSymbol(BinaryOperator op) {
     return "?";
 }
 
+// Copies what the parser wrote; the analyzer's results aren't copied (cloning
+// is only done before analysis).
+Access cloneAccess(const Access& access) {
+    Access copy;
+    copy.name = access.name;
+    for (const auto& selector : access.selectors) {
+        std::visit(Overloaded{
+                       [&](const FieldSelector& field) { copy.selectors.emplace_back(field); },
+                       [&](const IndexSelector& index) {
+                           IndexSelector indexCopy;
+                           indexCopy.location = index.location;
+                           for (const auto& i : index.indices) {
+                               indexCopy.indices.push_back(cloneExpression(*i));
+                           }
+                           copy.selectors.emplace_back(std::move(indexCopy));
+                       },
+                   },
+                   selector);
+    }
+    return copy;
+}
+
+std::string formatAccess(const Access& access) {
+    std::string text = access.name;
+    for (const auto& selector : access.selectors) {
+        std::visit(Overloaded{
+                       [&](const FieldSelector& field) { text += "." + field.name; },
+                       [&](const IndexSelector& index) {
+                           text += '[';
+                           for (std::size_t i = 0; i < index.indices.size(); ++i) {
+                               text += (i == 0 ? "" : ", ") + formatExpression(*index.indices[i]);
+                           }
+                           text += ']';
+                       },
+                   },
+                   selector);
+    }
+    return text;
+}
+
+InitializerPtr cloneInitializer(const Initializer& initializer) {
+    using Node = decltype(Initializer::node);
+    auto node = std::visit(Overloaded{
+                               [](const ExpressionPtr& expression) -> Node { return cloneExpression(*expression); },
+                               [](const ArrayInitializer& array) -> Node {
+                                   ArrayInitializer copy;
+                                   for (const auto& item : array.items) {
+                                       copy.items.push_back(
+                                           ArrayInitItem{item.repeat, item.value ? cloneInitializer(*item.value) : nullptr});
+                                   }
+                                   return copy;
+                               },
+                               [](const StructInitializer& structure) -> Node {
+                                   StructInitializer copy;
+                                   for (const auto& field : structure.fields) {
+                                       copy.fields.push_back(
+                                           StructInitField{field.name, cloneInitializer(*field.value), field.location});
+                                   }
+                                   return copy;
+                               },
+                           },
+                           initializer.node);
+    return std::make_unique<Initializer>(Initializer{std::move(node), initializer.location});
+}
+
+std::string formatInitializer(const Initializer& initializer) {
+    return std::visit(Overloaded{
+                          [](const ExpressionPtr& expression) { return formatExpression(*expression); },
+                          [](const ArrayInitializer& array) {
+                              std::string text = "[";
+                              for (std::size_t i = 0; i < array.items.size(); ++i) {
+                                  const auto& item = array.items[i];
+                                  text += i == 0 ? "" : ", ";
+                                  const auto value = item.value ? formatInitializer(*item.value) : std::string();
+                                  text += item.repeat == 1 && item.value ? value : fmt::format("{}({})", item.repeat, value);
+                              }
+                              return text + "]";
+                          },
+                          [](const StructInitializer& structure) {
+                              std::string text = "(";
+                              for (std::size_t i = 0; i < structure.fields.size(); ++i) {
+                                  text += fmt::format("{}{} := {}", i == 0 ? "" : ", ", structure.fields[i].name,
+                                                      formatInitializer(*structure.fields[i].value));
+                              }
+                              return text + ")";
+                          },
+                      },
+                      initializer.node);
+}
+
 ExpressionPtr cloneExpression(const Expression& expression) {
     using Node = decltype(Expression::node);
     auto node = std::visit(Overloaded{
                                [](const Literal& literal) -> Node { return literal; },
-                               [](const VariableRef& variable) -> Node { return variable; },
-                               [](const MemberRef& member) -> Node { return member; },
+                               [](const Access& access) -> Node { return cloneAccess(access); },
                                [](const UnaryExpression& unary) -> Node {
                                    return UnaryExpression{unary.op, cloneExpression(*unary.operand)};
                                },
@@ -282,8 +451,7 @@ ExpressionPtr cloneExpression(const Expression& expression) {
 std::string formatExpression(const Expression& expression) {
     return std::visit(Overloaded{
                           [](const Literal& literal) { return formatLiteral(literal); },
-                          [](const VariableRef& variable) { return variable.name; },
-                          [](const MemberRef& member) { return member.instance + "." + member.member; },
+                          [](const Access& access) { return formatAccess(access); },
                           [](const UnaryExpression& unary) {
                               const char* separator = unary.op == UnaryOperator::Not ? " " : "";
                               return fmt::format("({}{}{})", operatorSymbol(unary.op), separator,
@@ -311,6 +479,10 @@ std::string dumpTree(const Pou& pou) {
 
 std::string dumpTree(const CompilationUnit& unit) {
     std::string out;
+    for (const auto& type : unit.types) {
+        TreeWriter(out).typeDeclaration(type);
+        out += '\n';
+    }
     for (const auto& functionBlock : unit.functionBlocks) {
         out += dumpTree(functionBlock);
         out += '\n';

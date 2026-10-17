@@ -96,7 +96,7 @@ std::string example(const std::string& name) {
 } // namespace
 
 TEST_CASE("Both engines agree on every example program") {
-    for (const char* name : {"traffic_light.st", "loops.st", "function_blocks.st", "s7_demo.st", "stop_demo.st"}) {
+    for (const char* name : {"traffic_light.st", "loops.st", "function_blocks.st", "s7_demo.st", "stop_demo.st", "inspection.st"}) {
         CAPTURE(name);
         runBothEngines(example(name), 700);
     }
@@ -209,4 +209,70 @@ TEST_CASE("Both engines stop with the same runtime error at the same place") {
                                       200);
     REQUIRE(error.has_value()); // with random inputs, n MOD 4 - i hits 0 sooner or later
     CHECK(*error == "division by zero at 2:31");
+}
+
+TEST_CASE("Both engines agree on arrays and structs, in memory and placed with AT") {
+    const auto error = runBothEngines(R"(
+        TYPE
+            Point : STRUCT x : REAL; y : REAL := 1.0; END_STRUCT;
+            Sample : STRUCT
+                ok : BOOL;
+                nok : BOOL;
+                count : INT;
+                where : Point;
+                history : ARRAY[0..3] OF DINT;
+            END_STRUCT;
+        END_TYPE
+
+        FUNCTION_BLOCK Average
+        VAR_INPUT values : ARRAY[1..8] OF INT; END_VAR
+        VAR_OUTPUT mean : REAL; best : Point; END_VAR
+        VAR i : INT; sum : DINT; END_VAR
+            sum := 0;
+            FOR i := 1 TO 8 DO sum := sum + values[i]; END_FOR;
+            mean := sum / 8.0;
+            best.x := mean; best.y := values[(sum MOD 8 + 8) MOD 8 + 1];
+        END_FUNCTION_BLOCK
+
+        PROGRAM Arrays
+        VAR
+            a AT %IW0 : INT;
+            b AT %IW2 : INT;
+            bits AT %IB2 : ARRAY[0..7] OF BOOL;
+            samples : ARRAY[1..4] OF Sample;
+            placed AT %DB3.DBB0 : ARRAY[1..2] OF Sample;
+            ring : ARRAY[1..8] OF INT := [8(-1)];
+            grid : ARRAY[1..3, -1..1] OF DINT;
+            pos, i, j, k : INT;
+            avg : Average;
+            p, q : Point;
+        END_VAR
+            pos := (a MOD 8 + 8) MOD 8;
+            ring[pos + 1] := b;
+            i := (b MOD 4 + 4) MOD 4 + 1;
+            samples[i].ok := bits[pos];
+            samples[i].nok := NOT samples[i].ok;
+            samples[i].count := samples[i].count + 1;
+            samples[i].where.x := a / 100.0;
+            samples[i].history[samples[i].count MOD 4] := a * b;
+            placed[(i MOD 2) + 1] := samples[i];
+            IF bits[7] THEN placed[1].where.y := placed[1].where.y + 1.0; END_IF;
+            FOR j := 1 TO 3 DO
+                FOR k := -1 TO 1 DO grid[j, k] := grid[j, k] + ring[(j * 3 + k + 8) MOD 8 + 1]; END_FOR;
+            END_FOR;
+            avg(values := ring);
+            q := avg.best;
+            IF q.x > p.x THEN p := q; END_IF;
+        END_PROGRAM)",
+                   2000);
+    CHECK_FALSE(error.has_value()); // all 2000 cycles ran
+}
+
+TEST_CASE("Both engines stop with the same error for an index out of bounds") {
+    const auto error = runBothEngines("PROGRAM P VAR n AT %IW0 : INT; a : ARRAY[0..199] OF INT; x : INT; END_VAR\n"
+                                      "  x := a[n];\n"
+                                      "END_PROGRAM",
+                                      200);
+    REQUIRE(error.has_value());
+    CHECK(error->find("is outside the bounds 0..199 at 2:10") != std::string::npos);
 }

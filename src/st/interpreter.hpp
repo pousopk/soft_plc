@@ -90,9 +90,6 @@ public:
     // REAL). Returns false if there's no such variable.
     bool setValue(std::string_view path, const Value& value, ProcessImage& image);
 
-    // The current value of a program variable by slot (not for instances).
-    Value valueOf(std::size_t slot, const ProcessImage& image) const;
-
     const Pou& program() const { return unit_->program; }
     Engine engine() const { return engine_; }
 
@@ -100,6 +97,17 @@ public:
     const Chunk* bytecode(const Pou& pou) const;
 
 private:
+    // A place in memory that holds values: one variable of one instance,
+    // plus an offset inside it (an array element, a struct field). For AT
+    // variables the offset counts bits in the process image; for the rest it
+    // counts leaves (see Type).
+    struct Place {
+        Instance* instance;
+        const VariableDeclaration* variable;
+        std::size_t leaf = 0;
+        std::size_t bit = 0;
+    };
+
     // What a statement asks its enclosing statements to do next.
     enum class Flow {
         Normal, // carry on with the next statement
@@ -118,13 +126,21 @@ private:
     Value evaluate(const Expression& expression, Instance& self);
     Value evaluateBinary(const BinaryExpression& binary, const Expression& expression, Instance& self);
 
-    Value load(const Instance& self, std::size_t slot, const ProcessImage* image) const;
-    void store(Instance& self, std::size_t slot, const Value& value);
+    void initialize(Instance& instance, const Type& type, std::size_t leaf, const Initializer* initializer);
+
+    // Where an access points to, with its run-time indices worked out and
+    // checked (shared by both engines, so both report the same errors).
+    Place place(const Access& access, Instance& self);
+    static Place wholeVariable(Instance& instance, std::size_t slot);
+    Value loadLeaf(const Place& place, DataType type, const ProcessImage* image) const;
+    void storeLeaf(const Place& place, DataType type, const Value& value);
+    void copyAggregate(const Place& from, const Place& to, const Type& type);
 
     void countLoopIteration(SourceLocation where);
 
     // The bytecode VM: runs one POU's compiled code on `self`.
     void runBytecode(const Chunk& chunk, Instance& self);
+    Place vmPlace(const PlaceInfo& info, Instance& self, std::int64_t offset) const;
 
     // On the heap, so that the instances' pointers into it stay valid when
     // the Interpreter itself is moved.

@@ -34,28 +34,15 @@ extern "C" void onSignal(int) { stopRequested = true; }
 
 double toMicroseconds(softplc::Duration d) { return std::chrono::duration<double, std::micro>(d).count(); }
 
-// Prints every program variable; for function block instances, their inputs and outputs.
+// Prints the value of every variable: every array element and struct field,
+// and the variables inside function block instances.
 void printVariables(const softplc::st::Interpreter& interpreter, const softplc::ProcessImage& image) {
     using namespace softplc::st;
-    const auto& variables = interpreter.program().variables;
     fmt::print("Variables:\n");
-    for (std::size_t slot = 0; slot < variables.size(); ++slot) {
-        const auto& variable = variables[slot];
-        if (variable.type == DataType::FunctionBlock) {
-            fmt::print("  {} : {}\n", variable.name, variable.functionBlock->name);
-            for (const auto& member : variable.functionBlock->variables) {
-                if (member.section == VarSection::Local) {
-                    continue;
-                }
-                const auto value = interpreter.valueOf(variable.name + "." + member.name, image);
-                fmt::print("    .{} : {} = {}\n", member.name, dataTypeName(member.type),
-                           value ? formatValue(*value, member.type) : "?");
-            }
-            continue;
-        }
-        const auto at = variable.address ? " AT " + variable.address->toString() : std::string();
-        fmt::print("  {}{} : {} = {}\n", variable.name, at, dataTypeName(variable.type),
-                   formatValue(interpreter.valueOf(slot, image), variable.type));
+    for (const auto& variable : interpreter.variables()) {
+        const auto value = interpreter.valueOf(variable.path, image);
+        fmt::print("  {} : {} = {}\n", variable.path, dataTypeName(variable.type),
+                   value ? formatValue(*value, variable.type) : "?");
     }
 }
 

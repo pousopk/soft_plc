@@ -1,4 +1,5 @@
 #pragma once
+#include "st/ast.hpp"
 #include "st/diagnostic.hpp"
 #include <cstddef>
 #include <cstdint>
@@ -27,17 +28,24 @@ enum class Op : std::uint8_t {
     PushInt,  // push imm (also BOOL 0/1 and TIME in ms)
     PushReal, // push imm, holding a double's bits
 
-    // Variables of the running instance (a = slot)
+    // Values of the running instance (a = leaf)
     LoadBool, LoadInt, LoadReal,
     StoreBool, StoreInt16, StoreInt32, StoreReal, // pop, convert to the type, store
-    LoadAt, StoreAt,                              // AT variables, through the process image
 
-    // Inputs and outputs of a child instance (a = instance slot, b = member slot)
+    // Inputs and outputs of a child instance (a = instance slot, b = leaf in the child)
     LoadMemberBool, LoadMemberInt, LoadMemberReal,
     StoreMemberBool, StoreMemberInt16, StoreMemberInt32, StoreMemberReal,
 
     // Scratch slots for the compiler's own use (CASE selector, FOR bounds), a = index
     LoadTemp, StoreTemp,
+
+    // Everything else: AT variables and array elements with run-time
+    // indices. a = an entry in Chunk::places; the offset on the stack is
+    // added to the place's fixed offset.
+    Index,      // pop an array index, check it (a = entry in Chunk::indices), push its offset
+    LoadPlace,  // pop the offset, push the value
+    StorePlace, // pop the offset, pop the value, store it
+    CopyPlace,  // pop the target's offset, then the source's; copy a whole array or struct (a = source, b = target)
 
     // Integer arithmetic on 64 bits, then wrapped to the type's size
     AddI, SubI, MulI, DivI, ModI, NegI, Wrap16, Wrap32,
@@ -71,10 +79,28 @@ struct Instruction {
     std::int64_t imm = 0;
 };
 
+// A place the place instructions use: a variable, an offset inside it, and
+// the type found there.
+struct PlaceInfo {
+    std::size_t instanceSlot = kNoSlot; // a child instance's member, or kNoSlot for the POU's own variable
+    std::size_t slot = 0;               // the variable
+    std::size_t leafOffset = 0;         // the fixed offset (leaves, or bits for AT variables)
+    std::size_t bitOffset = 0;
+    const Type* type = nullptr;
+};
+
+// One array index to check: its bounds, and what one step is worth.
+struct IndexInfo {
+    ArrayDimension bounds;
+    std::size_t stride = 0; // in leaves, or in bits for AT variables
+};
+
 // The compiled code of one POU.
 struct Chunk {
     std::vector<Instruction> code;
     std::vector<SourceLocation> locations; // one per instruction, for runtime error messages
+    std::vector<PlaceInfo> places;
+    std::vector<IndexInfo> indices;
     std::size_t temps = 0;                 // scratch slots needed
     std::size_t maxStack = 0;              // deepest the operand stack ever gets
 };

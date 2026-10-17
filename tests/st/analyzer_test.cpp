@@ -32,7 +32,7 @@ TEST_CASE("A correct program passes and gets types and slots filled in") {
     REQUIRE(result.has_value());
 
     const auto& first = std::get<Assignment>(result->program.body[0].node);
-    CHECK(first.slot == 2); // flag, other, small
+    CHECK(first.target.slot == 2); // flag, other, small
     CHECK(first.value->type == DataType::Int);
 
     const auto& second = std::get<Assignment>(result->program.body[1].node);
@@ -109,7 +109,7 @@ TEST_CASE("EXIT only inside loops") {
 
 TEST_CASE("Unknown type names") {
     CHECK(errorOf("PROGRAM P VAR x : WORD; END_VAR END_PROGRAM") ==
-          "unknown type 'WORD' (not BOOL, INT, DINT, REAL, TIME or a known function block)");
+          "unknown type 'WORD' (not BOOL, INT, DINT, REAL, TIME, a TYPE or a function block)");
 }
 
 TEST_CASE("Undeclared and duplicate variables") {

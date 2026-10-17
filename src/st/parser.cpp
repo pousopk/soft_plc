@@ -21,7 +21,8 @@ struct ParseError {
 constexpr std::initializer_list<TokenKind> blockEnds = {
     TokenKind::EndIf,    TokenKind::Elsif,  TokenKind::Else,      TokenKind::EndCase,    TokenKind::EndFor,
     TokenKind::EndWhile, TokenKind::Until,  TokenKind::EndRepeat, TokenKind::EndProgram, TokenKind::EndVar,
-    TokenKind::EndFunctionBlock, TokenKind::Program, TokenKind::FunctionBlock,
+    TokenKind::EndFunctionBlock, TokenKind::Program, TokenKind::FunctionBlock, TokenKind::Type,
+    TokenKind::EndType, TokenKind::EndStruct,
 };
 
 ExpressionPtr makeExpression(decltype(Expression::node) node, SourceLocation location) {
@@ -50,12 +51,15 @@ class Parser {
 public:
     explicit Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
 
-    // A whole file: any number of FUNCTION_BLOCKs and exactly one PROGRAM, in any order.
+    // A whole file: TYPE blocks, any number of FUNCTION_BLOCKs and exactly
+    // one PROGRAM, in any order.
     CompilationUnit compilationUnit() {
         CompilationUnit unit;
         bool haveProgram = false;
         while (!check(TokenKind::EndOfFile)) {
-            if (check(TokenKind::FunctionBlock)) {
+            if (check(TokenKind::Type)) {
+                typeBlock(unit.types);
+            } else if (check(TokenKind::FunctionBlock)) {
                 unit.functionBlocks.push_back(pou(PouKind::FunctionBlock));
             } else if (check(TokenKind::Program)) {
                 if (haveProgram) {
@@ -64,7 +68,7 @@ public:
                 unit.program = pou(PouKind::Program);
                 haveProgram = true;
             } else {
-                fail(peek(), fmt::format("expected 'PROGRAM' or 'FUNCTION_BLOCK', found {}", describe(peek())));
+                fail(peek(), fmt::format("expected 'PROGRAM', 'FUNCTION_BLOCK' or 'TYPE', found {}", describe(peek())));
             }
         }
         if (!haveProgram) {
@@ -140,6 +144,36 @@ private:
         advance(); // END_VAR
     }
 
+    // TYPE  Name : STRUCT ... END_STRUCT;  Name : ARRAY[1..3] OF INT;  ...  END_TYPE
+    void typeBlock(std::vector<TypeDeclaration>& types) {
+        advance(); // TYPE
+        while (!check(TokenKind::EndType)) {
+            TypeDeclaration type;
+            const Token& name = expect(TokenKind::Identifier, "a type name or 'END_TYPE'");
+            type.name = name.text;
+            type.location = name.location;
+            expect(TokenKind::Colon, fmt::format("':' after the type name '{}'", name.text));
+            if (match(TokenKind::Struct)) {
+                type.isStruct = true;
+                while (!check(TokenKind::EndStruct)) {
+                    if (!check(TokenKind::Identifier)) {
+                        fail(peek(), fmt::format("expected a field name or 'END_STRUCT', found {}", describe(peek())));
+                    }
+                    declarationLine(type.fields, VarSection::Local);
+                }
+                advance(); // END_STRUCT
+                if (type.fields.empty()) {
+                    fail(name, fmt::format("STRUCT '{}' has no fields", name.text));
+                }
+            } else {
+                type.alias = typeSpec();
+            }
+            expect(TokenKind::Semicolon, "';' after the type declaration");
+            types.push_back(std::move(type));
+        }
+        advance(); // END_TYPE
+    }
+
     void declarationLine(std::vector<VariableDeclaration>& variables, VarSection section) {
         std::vector<const Token*> names{&advance()};
         while (check(TokenKind::Comma)) {
@@ -157,12 +191,12 @@ private:
         }
 
         expect(TokenKind::Colon, "':' before the type");
-        const auto [type, typeText] = typeName();
+        const auto spec = typeSpec();
 
-        ExpressionPtr initialValue;
+        InitializerPtr initialValue;
         if (check(TokenKind::Assign)) {
             advance();
-            initialValue = expression();
+            initialValue = initializer();
         }
         expect(TokenKind::Semicolon, "';' at the end of the declaration");
 
@@ -170,27 +204,97 @@ private:
         for (const Token* name : names) {
             VariableDeclaration declaration;
             declaration.name = name->text;
-            declaration.type = type;
-            declaration.typeName = typeText;
+            declaration.typeSpec = spec;
+            if (spec.dimensions.empty()) {
+                declaration.type = elementaryTypeFromName(spec.name).value_or(DataType::Unknown);
+            }
             declaration.section = section;
             declaration.address = address;
-            declaration.initialValue = initialValue ? cloneExpression(*initialValue) : nullptr;
+            declaration.initialValue = initialValue ? cloneInitializer(*initialValue) : nullptr;
             declaration.location = name->location;
             variables.push_back(std::move(declaration));
         }
     }
 
-    // An elementary type (BOOL, INT, ...) or, for any other name, a function
-    // block type. Whether that function block exists is the analyzer's job.
-    std::pair<DataType, std::string> typeName() {
-        const Token& token = expect(TokenKind::Identifier, "a type name");
-        const auto upper = toUpper(token.text);
-        if (upper == "BOOL") return {DataType::Bool, upper};
-        if (upper == "INT") return {DataType::Int, upper};
-        if (upper == "DINT") return {DataType::DInt, upper};
-        if (upper == "REAL") return {DataType::Real, upper};
-        if (upper == "TIME") return {DataType::Time, upper};
-        return {DataType::FunctionBlock, token.text};
+    // A type name (BOOL, INT, Point, TON, ...) or ARRAY[1..10, 0..3] OF name.
+    // Whether the name exists is the analyzer's job.
+    TypeSpec typeSpec() {
+        TypeSpec spec;
+        spec.location = peek().location;
+        if (match(TokenKind::Array)) {
+            expect(TokenKind::LeftBracket, "'[' after ARRAY, as in ARRAY[1..10] OF INT");
+            do {
+                const Token& first = peek();
+                ArrayDimension dimension;
+                dimension.low = signedInteger("the lower bound of the array, as in [1..10]");
+                expect(TokenKind::DotDot, "'..' between the array bounds, as in [1..10]");
+                dimension.high = signedInteger("the upper bound of the array, as in [1..10]");
+                if (dimension.high < dimension.low) {
+                    fail(first, fmt::format("array bounds {}..{} are empty: the first must be the smaller one",
+                                            dimension.low, dimension.high));
+                }
+                spec.dimensions.push_back(dimension);
+            } while (match(TokenKind::Comma));
+            expect(TokenKind::RightBracket, "']' after the array bounds");
+            expect(TokenKind::Of, "'OF' after ARRAY[...]");
+            if (check(TokenKind::Array)) {
+                fail(peek(), "an array of arrays isn't allowed: use several dimensions, as in ARRAY[1..3, 1..4] OF INT, "
+                             "or declare the inner array as a TYPE");
+            }
+        }
+        spec.name = expect(TokenKind::Identifier, "a type name").text;
+        return spec;
+    }
+
+    std::int64_t signedInteger(const std::string& what) {
+        const bool negative = match(TokenKind::Minus);
+        const auto value = std::get<std::int64_t>(expect(TokenKind::Integer, what).value);
+        return negative ? -value : value;
+    }
+
+    // An initial value: an expression, [array items] or (field := value, ...).
+    InitializerPtr initializer() {
+        const auto location = peek().location;
+        if (match(TokenKind::LeftBracket)) {
+            ArrayInitializer array;
+            do {
+                array.items.push_back(arrayInitItem());
+            } while (match(TokenKind::Comma));
+            expect(TokenKind::RightBracket, "']' to close the array's initial values");
+            return std::make_unique<Initializer>(Initializer{std::move(array), location});
+        }
+        if (check(TokenKind::LeftParen) && peekAt(1).kind == TokenKind::Identifier &&
+            peekAt(2).kind == TokenKind::Assign) {
+            advance(); // '('
+            StructInitializer structure;
+            do {
+                const Token& name = expect(TokenKind::Identifier, "a field name");
+                expect(TokenKind::Assign, fmt::format("':=' after '{}'", name.text));
+                structure.fields.push_back(StructInitField{name.text, initializer(), name.location});
+            } while (match(TokenKind::Comma));
+            expect(TokenKind::RightParen, "')' to close the struct's initial values");
+            return std::make_unique<Initializer>(Initializer{std::move(structure), location});
+        }
+        return std::make_unique<Initializer>(Initializer{expression(), location});
+    }
+
+    // 5, or 3(0) for "three times 0", or 3() for "three default values".
+    ArrayInitItem arrayInitItem() {
+        if (check(TokenKind::Integer) && peekAt(1).kind == TokenKind::LeftParen) {
+            const Token& count = advance();
+            const auto repeat = std::get<std::int64_t>(count.value);
+            if (repeat < 1) {
+                fail(count, "a repeat count must be at least 1");
+            }
+            advance(); // '('
+            ArrayInitItem item{repeat, nullptr};
+            if (!check(TokenKind::RightParen)) {
+                item.value = initializer();
+            }
+            expect(TokenKind::RightParen, "')' after the repeated value");
+            return item;
+        }
+        return ArrayInitItem{1, initializer()};
     }
 
     // ------------------------------------------------------------ Statements
@@ -217,11 +321,6 @@ private:
             if (peekNext().kind == TokenKind::LeftParen) {
                 return call();
             }
-            if (peekNext().kind == TokenKind::Dot) {
-                fail(peekNext(), fmt::format("can't assign to a member of '{}': set inputs in the call, like "
-                                             "{}(IN := ...); outputs are read-only",
-                                             peek().text, peek().text));
-            }
             return assignment();
         case TokenKind::If: return ifStatement();
         case TokenKind::Case: return caseStatement();
@@ -242,13 +341,37 @@ private:
         }
     }
 
-    // name := expression;
+    // target := expression;   where target is a variable or a part of one: a, p.x, values[i]
     Statement assignment() {
-        const Token& target = advance();
-        expect(TokenKind::Assign, fmt::format("':=' after '{}'", target.text));
+        const auto location = peek().location;
+        auto target = access();
+        expect(TokenKind::Assign, fmt::format("':=' after '{}'", formatAccess(target)));
         auto value = expression();
         expect(TokenKind::Semicolon, "';' at the end of the statement");
-        return Statement{Assignment{target.text, std::move(value)}, target.location};
+        return Statement{Assignment{std::move(target), std::move(value)}, location};
+    }
+
+    // name, then any number of .field and [index, ...]
+    Access access() {
+        Access result;
+        result.name = expect(TokenKind::Identifier, "a variable name").text;
+        for (;;) {
+            if (check(TokenKind::Dot)) {
+                advance();
+                const Token& field = expect(TokenKind::Identifier, fmt::format("a name after '{}.'", formatAccess(result)));
+                result.selectors.emplace_back(FieldSelector{field.text, field.location});
+            } else if (check(TokenKind::LeftBracket)) {
+                IndexSelector index;
+                index.location = advance().location;
+                do {
+                    index.indices.push_back(expression());
+                } while (match(TokenKind::Comma));
+                expect(TokenKind::RightBracket, "']' after the array index");
+                result.selectors.emplace_back(std::move(index));
+            } else {
+                return result;
+            }
+        }
     }
 
     // instance(NAME := value, NAME := value);
@@ -474,18 +597,17 @@ private:
         case TokenKind::Time:
             advance();
             return makeExpression(Literal{std::get<std::int64_t>(token.value), true}, token.location);
-        case TokenKind::Identifier:
-            advance();
-            if (match(TokenKind::Dot)) {
-                const Token& member = expect(TokenKind::Identifier, fmt::format("a member name after '{}.'", token.text));
-                return makeExpression(MemberRef{token.text, member.text}, token.location);
-            }
+        case TokenKind::Identifier: {
+            const auto location = token.location;
+            const auto name = token.text;
+            auto result = access();
             if (check(TokenKind::LeftParen)) {
                 fail(peek(), fmt::format("function block calls are statements: write '{}(...);' on its own, "
                                          "then use its outputs like {}.Q",
-                                         token.text, token.text));
+                                         name, name));
             }
-            return makeExpression(VariableRef{token.text}, token.location);
+            return makeExpression(std::move(result), location);
+        }
         case TokenKind::LeftParen: {
             advance();
             auto inner = expression();
@@ -500,8 +622,9 @@ private:
 
     const Token& peek() const { return tokens_[pos_]; }
 
-    // The token after the next one (or EndOfFile).
-    const Token& peekNext() const { return tokens_[std::min(pos_ + 1, tokens_.size() - 1)]; }
+    // The token `ahead` places after the next one (or EndOfFile).
+    const Token& peekAt(std::size_t ahead) const { return tokens_[std::min(pos_ + ahead, tokens_.size() - 1)]; }
+    const Token& peekNext() const { return peekAt(1); }
 
     bool check(TokenKind kind) const { return peek().kind == kind; }
 

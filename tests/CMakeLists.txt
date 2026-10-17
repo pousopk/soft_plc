@@ -25,6 +25,8 @@ add_executable(soft_plc_tests
   monitor/monitor_test.cpp
   s7/s7_server_test.cpp
   st/engine_equivalence_test.cpp
+  st/arrays_structs_test.cpp
+  st/guide_test.cpp
 )
 target_link_libraries(soft_plc_tests PRIVATE soft_plc_core snap7_static doctest::doctest fmt::fmt)
 target_include_directories(soft_plc_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

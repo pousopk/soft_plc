@@ -24,6 +24,8 @@ const char* tokenKindName(TokenKind kind) {
     case TokenKind::Dot: return "'.'";
     case TokenKind::LeftParen: return "'('";
     case TokenKind::RightParen: return "')'";
+    case TokenKind::LeftBracket: return "'['";
+    case TokenKind::RightBracket: return "']'";
     case TokenKind::Plus: return "'+'";
     case TokenKind::Minus: return "'-'";
     case TokenKind::Star: return "'*'";
@@ -49,6 +51,11 @@ const char* tokenKindName(TokenKind kind) {
     case TokenKind::VarOutput: return "'VAR_OUTPUT'";
     case TokenKind::EndVar: return "'END_VAR'";
     case TokenKind::At: return "'AT'";
+    case TokenKind::Type: return "'TYPE'";
+    case TokenKind::EndType: return "'END_TYPE'";
+    case TokenKind::Struct: return "'STRUCT'";
+    case TokenKind::EndStruct: return "'END_STRUCT'";
+    case TokenKind::Array: return "'ARRAY'";
     case TokenKind::If: return "'IF'";
     case TokenKind::Then: return "'THEN'";
     case TokenKind::Elsif: return "'ELSIF'";
@@ -96,6 +103,9 @@ constexpr std::pair<std::string_view, TokenKind> keywords[] = {
     {"END_WHILE", TokenKind::EndWhile}, {"REPEAT", TokenKind::Repeat},
     {"UNTIL", TokenKind::Until},     {"END_REPEAT", TokenKind::EndRepeat},
     {"EXIT", TokenKind::Exit},       {"RETURN", TokenKind::Return},
+    {"TYPE", TokenKind::Type},       {"END_TYPE", TokenKind::EndType},
+    {"STRUCT", TokenKind::Struct},   {"END_STRUCT", TokenKind::EndStruct},
+    {"ARRAY", TokenKind::Array},
 };
 
 // Thrown inside the lexer to abort on the first error; tokenize() catches it
@@ -383,6 +393,8 @@ private:
             return make(TokenKind::Dot, ".");
         case '(': return make(TokenKind::LeftParen, "(");
         case ')': return make(TokenKind::RightParen, ")");
+        case '[': return make(TokenKind::LeftBracket, "[");
+        case ']': return make(TokenKind::RightBracket, "]");
         case '+': return make(TokenKind::Plus, "+");
         case '-': return make(TokenKind::Minus, "-");
         case '/': return make(TokenKind::Slash, "/");

@@ -19,6 +19,10 @@ struct AnalysisError {
     Diagnostic diagnostic;
 };
 
+// The most leaves one variable may have: a guard against typing
+// ARRAY[1..100000000] by accident.
+constexpr std::size_t kMaxLeaves = 1'000'000;
+
 bool isInteger(DataType type) { return type == DataType::Int || type == DataType::DInt || type == DataType::AnyInt; }
 bool isNumeric(DataType type) { return isInteger(type) || type == DataType::Real; }
 
@@ -30,6 +34,10 @@ DataType commonNumericType(DataType a, DataType b) {
     if (a == DataType::Int || b == DataType::Int) return DataType::Int;
     return DataType::AnyInt;
 }
+
+// Rounds a bit count up to whole words (16 bits): in the S7 layout, words,
+// structs and arrays start at even bytes.
+std::size_t roundUpToWord(std::size_t bits) { return (bits + 15) / 16 * 16; }
 
 // The value of an integer literal, also when written with a minus: 5 or -5.
 std::optional<std::int64_t> integerConstant(const Expression& expression) {
@@ -59,16 +67,58 @@ std::optional<std::size_t> findVariable(const Pou& pou, const std::string& name)
     return std::nullopt;
 }
 
+// The aggregate type of an expression, if it is a whole array or struct.
+const Type* aggregateOf(const Expression& expression) {
+    if (const auto* access = std::get_if<Access>(&expression.node); access && access->type &&
+                                                                    access->type->isAggregate()) {
+        return access->type;
+    }
+    return nullptr;
+}
+
+// How a type is named in error messages.
+std::string typeText(const Expression& expression) {
+    if (const auto* aggregate = aggregateOf(expression)) {
+        return aggregate->name;
+    }
+    return dataTypeName(expression.type);
+}
+
+// "[1,2]" for the element at `index` (counted from 0) of an array.
+std::string indexSuffix(const std::vector<ArrayDimension>& dimensions, std::size_t index) {
+    std::vector<std::int64_t> parts(dimensions.size());
+    for (std::size_t k = dimensions.size(); k-- > 0;) {
+        const auto length = static_cast<std::size_t>(dimensions[k].length());
+        parts[k] = dimensions[k].low + static_cast<std::int64_t>(index % length);
+        index /= length;
+    }
+    std::string text = "[";
+    for (std::size_t k = 0; k < parts.size(); ++k) {
+        text += fmt::format("{}{}", k == 0 ? "" : ",", parts[k]);
+    }
+    return text + "]";
+}
+
 class Analyzer {
 public:
     explicit Analyzer(CompilationUnit& unit) : unit_(unit) {}
 
     void run() {
         registerFunctionBlockTypes();
-        for (auto& functionBlock : unit_.functionBlocks) {
-            checkPou(functionBlock);
+        registerTypeDeclarations();
+        for (auto& type : unit_.types) {
+            resolveDeclaredType(type);
         }
-        checkPou(unit_.program);
+        // First every POU's variables, so a body can use any function
+        // block's inputs and outputs, wherever that block is declared.
+        for (auto& functionBlock : unit_.functionBlocks) {
+            declarePou(functionBlock);
+        }
+        declarePou(unit_.program);
+        for (auto& functionBlock : unit_.functionBlocks) {
+            checkBody(functionBlock);
+        }
+        checkBody(unit_.program);
         checkNoFunctionBlockContainsItself();
     }
 
@@ -81,10 +131,10 @@ private:
 
     void registerFunctionBlockTypes() {
         for (const auto& builtin : builtinFunctionBlocks()) {
-            types_.emplace(toUpper(builtin.name), &builtin);
+            functionBlocks_.emplace(toUpper(builtin.name), &builtin);
         }
         for (const auto& functionBlock : unit_.functionBlocks) {
-            const auto [it, inserted] = types_.emplace(toUpper(functionBlock.name), &functionBlock);
+            const auto [it, inserted] = functionBlocks_.emplace(toUpper(functionBlock.name), &functionBlock);
             if (!inserted) {
                 if (it->second->builtin) {
                     fail(functionBlock.location,
@@ -125,31 +175,180 @@ private:
         }
     }
 
-    // ------------------------------------------------------------ One POU
+    // ------------------------------------------------------------ Declared types (TYPE ... END_TYPE)
 
-    void checkPou(Pou& pou) {
-        pou_ = &pou;
-        slots_.clear();
-        loopVariables_.clear();
-        loopDepth_ = 0;
-
-        declareVariables();
-        for (auto& variable : pou.variables) {
-            if (variable.initialValue) {
-                checkInitialValue(variable);
+    void registerTypeDeclarations() {
+        for (auto& type : unit_.types) {
+            const auto upper = toUpper(type.name);
+            if (elementaryTypeFromName(type.name)) {
+                fail(type.location, fmt::format("'{}' is an elementary type; choose another name", type.name));
+            }
+            if (const auto fb = functionBlocks_.find(upper); fb != functionBlocks_.end()) {
+                fail(type.location, fb->second->builtin
+                                        ? fmt::format("'{}' is a standard function block; choose another name", type.name)
+                                        : fmt::format("'{}' is already the name of a function block", type.name));
+            }
+            const auto [it, inserted] = declaredTypes_.emplace(upper, &type);
+            if (!inserted) {
+                fail(type.location,
+                     fmt::format("type '{}' is already defined on line {}", type.name, it->second->location.line));
             }
         }
-        checkStatements(pou.body);
+    }
+
+    // Builds the Type of a TYPE declaration, once. Types may use each other
+    // in any order, but never themselves (a Point containing a Point).
+    const Type* resolveDeclaredType(TypeDeclaration& declaration) {
+        if (const auto done = resolvedTypes_.find(&declaration); done != resolvedTypes_.end()) {
+            return done->second;
+        }
+        if (std::find(resolving_.begin(), resolving_.end(), &declaration) != resolving_.end()) {
+            std::string chain;
+            for (const auto* step : resolving_) {
+                chain += step->name + " -> ";
+            }
+            fail(declaration.location,
+                 fmt::format("type '{}' contains itself: {}{}", declaration.name, chain, declaration.name));
+        }
+        resolving_.push_back(&declaration);
+        const Type* type = declaration.isStruct ? makeStruct(declaration)
+                                                : resolveTypeSpec(declaration.alias, declaration.name);
+        resolving_.pop_back();
+        resolvedTypes_.emplace(&declaration, type);
+        return type;
+    }
+
+    // A type name used inside a STRUCT, an ARRAY or a TYPE: elementary or declared.
+    const Type* resolveNamedType(const std::string& name, SourceLocation where) {
+        if (const auto elementary = elementaryTypeFromName(name)) {
+            return elementaryType(*elementary);
+        }
+        if (const auto it = declaredTypes_.find(toUpper(name)); it != declaredTypes_.end()) {
+            return resolveDeclaredType(*it->second);
+        }
+        if (functionBlocks_.count(toUpper(name)) > 0) {
+            fail(where, fmt::format("'{}' is a function block: arrays and structs of function block instances "
+                                    "aren't supported",
+                                    name));
+        }
+        fail(where, fmt::format("unknown type '{}' (not BOOL, INT, DINT, REAL, TIME, a TYPE or a function block)", name));
+    }
+
+    // A type as written: a name, or ARRAY[...] OF a name. `aliasName` names
+    // the result when it's the whole of a TYPE declaration (TYPE Row : ARRAY...).
+    const Type* resolveTypeSpec(const TypeSpec& spec, const std::string& aliasName = {}) {
+        const Type* named = resolveNamedType(spec.name, spec.location);
+        if (spec.dimensions.empty()) {
+            return named;
+        }
+        return makeArray(spec, *named, aliasName);
+    }
+
+    Type* newType() {
+        unit_.analyzedTypes.push_back(std::make_unique<Type>());
+        return unit_.analyzedTypes.back().get();
+    }
+
+    const Type* makeArray(const TypeSpec& spec, const Type& element, const std::string& aliasName) {
+        std::size_t count = 1;
+        for (const auto& dimension : spec.dimensions) {
+            count *= static_cast<std::size_t>(dimension.length());
+            if (count * element.leafCount() > kMaxLeaves) {
+                fail(spec.location, fmt::format("{} is too big (more than {} values)", formatTypeSpec(spec), kMaxLeaves));
+            }
+        }
+        Type* type = newType();
+        type->kind = Type::Kind::Array;
+        type->elementary = DataType::Array;
+        type->name = aliasName.empty() ? formatTypeSpec(spec) : aliasName;
+        type->dimensions = spec.dimensions;
+        type->element = &element;
+        type->elementLeaves = element.leafCount();
+        // S7 layout: BOOL elements are packed bit after bit; everything else
+        // keeps its own size (structs and arrays are already whole words).
+        type->elementBits = element.kind == Type::Kind::Elementary && element.elementary == DataType::Bool
+                                ? 1
+                                : element.bitSize;
+        type->bitSize = roundUpToWord(count * type->elementBits);
+        type->leaves.reserve(count * element.leafCount());
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto suffix = indexSuffix(spec.dimensions, index);
+            for (const auto& leaf : element.leaves) {
+                type->leaves.push_back(
+                    Type::Leaf{leaf.type, index * type->elementBits + leaf.bitOffset, suffix + leaf.suffix});
+            }
+        }
+        return type;
+    }
+
+    const Type* makeStruct(TypeDeclaration& declaration) {
+        Type* type = newType();
+        type->kind = Type::Kind::Struct;
+        type->elementary = DataType::Struct;
+        type->name = declaration.name;
+
+        std::set<std::string> names;
+        std::size_t bit = 0;
+        for (auto& field : declaration.fields) {
+            if (!names.insert(toUpper(field.name)).second) {
+                fail(field.location, fmt::format("STRUCT '{}' already has a field '{}'", declaration.name, field.name));
+            }
+            if (field.address) {
+                fail(field.location, "a STRUCT field can't have an AT address; place the whole variable with AT");
+            }
+            const Type* fieldType = resolveTypeSpec(field.typeSpec);
+            field.typeInfo = fieldType;
+            field.type = fieldType->elementary;
+
+            // S7 layout: BOOLs take the next free bit; everything else starts at an even byte.
+            const bool isBool = fieldType->kind == Type::Kind::Elementary && fieldType->elementary == DataType::Bool;
+            if (!isBool) {
+                bit = roundUpToWord(bit);
+            }
+            type->fields.push_back(Type::Field{field.name, fieldType, type->leaves.size(), bit, nullptr});
+            for (const auto& leaf : fieldType->leaves) {
+                type->leaves.push_back(Type::Leaf{leaf.type, bit + leaf.bitOffset, "." + field.name + leaf.suffix});
+            }
+            bit += fieldType->bitSize;
+            if (type->leaves.size() > kMaxLeaves) {
+                fail(field.location, fmt::format("STRUCT '{}' is too big (more than {} values)", declaration.name, kMaxLeaves));
+            }
+        }
+        type->bitSize = roundUpToWord(bit);
+
+        // Default values, checked once the struct itself is complete.
+        for (std::size_t i = 0; i < declaration.fields.size(); ++i) {
+            auto& field = declaration.fields[i];
+            if (field.initialValue) {
+                checkInitializer(*field.typeInfo, *field.initialValue, field.name);
+                type->fields[i].initialValue = field.initialValue.get();
+            }
+        }
+        return type;
+    }
+
+    // ------------------------------------------------------------ Declaring one POU's variables
+
+    // Sets pou_ and the name -> slot table for one POU.
+    void enterPou(Pou& pou) {
+        pou_ = &pou;
+        slots_.clear();
+        for (std::size_t slot = 0; slot < pou.variables.size(); ++slot) {
+            slots_.emplace(toUpper(pou.variables[slot].name), slot);
+        }
     }
 
     bool inProgram() const { return pou_->kind == PouKind::Program; }
 
-    void declareVariables() {
-        for (std::size_t slot = 0; slot < pou_->variables.size(); ++slot) {
-            auto& variable = pou_->variables[slot];
+    void declarePou(Pou& pou) {
+        pou_ = &pou;
+        slots_.clear();
+        std::size_t leaf = 0;
+        for (std::size_t slot = 0; slot < pou.variables.size(); ++slot) {
+            auto& variable = pou.variables[slot];
             const auto [it, inserted] = slots_.emplace(toUpper(variable.name), slot);
             if (!inserted) {
-                const auto& first = pou_->variables[it->second];
+                const auto& first = pou.variables[it->second];
                 fail(variable.location,
                      fmt::format("'{}' is already declared on line {}", variable.name, first.location.line));
             }
@@ -157,30 +356,42 @@ private:
                 fail(variable.location, "a PROGRAM can only have VAR blocks; VAR_INPUT and VAR_OUTPUT are for "
                                         "function blocks");
             }
-            if (variable.type == DataType::FunctionBlock) {
-                resolveFunctionBlockType(variable);
-            }
+            resolveVariableType(variable);
             if (variable.address) {
                 checkAddress(variable);
             }
+            if (variable.initialValue) {
+                checkInitializer(*variable.typeInfo, *variable.initialValue, variable.name);
+            }
+            // Leaves: the variable's values inside the instance. Function
+            // block instances have their own memory, and AT variables live
+            // in the process image.
+            if (variable.type != DataType::FunctionBlock && !variable.address) {
+                variable.leaf = leaf;
+                leaf += variable.typeInfo->leafCount();
+            }
         }
+        pou.leafCount = leaf;
     }
 
-    void resolveFunctionBlockType(VariableDeclaration& variable) const {
-        const auto it = types_.find(toUpper(variable.typeName));
-        if (it == types_.end()) {
-            fail(variable.location, fmt::format("unknown type '{}' (not BOOL, INT, DINT, REAL, TIME or a known "
-                                                "function block)",
-                                                variable.typeName));
+    void resolveVariableType(VariableDeclaration& variable) {
+        const auto& spec = variable.typeSpec;
+        if (spec.dimensions.empty()) {
+            if (const auto fb = functionBlocks_.find(toUpper(spec.name)); fb != functionBlocks_.end()) {
+                variable.type = DataType::FunctionBlock;
+                variable.functionBlock = fb->second;
+                if (variable.section != VarSection::Local) {
+                    fail(variable.location, "inputs and outputs can't be function block instances");
+                }
+                if (variable.initialValue) {
+                    fail(variable.location, fmt::format("'{}' is a {} instance and can't have an initial value",
+                                                        variable.name, fb->second->name));
+                }
+                return;
+            }
         }
-        variable.functionBlock = it->second;
-        if (variable.section != VarSection::Local) {
-            fail(variable.location, "inputs and outputs must be BOOL, INT, DINT, REAL or TIME, not function blocks");
-        }
-        if (variable.initialValue) {
-            fail(variable.location,
-                 fmt::format("'{}' is a {} instance and can't have an initial value", variable.name, it->second->name));
-        }
+        variable.typeInfo = resolveTypeSpec(spec);
+        variable.type = variable.typeInfo->elementary;
     }
 
     void checkAddress(const VariableDeclaration& variable) const {
@@ -188,33 +399,105 @@ private:
             fail(variable.location, fmt::format("AT can only be used in the PROGRAM, not inside function block '{}'",
                                                 pou_->name));
         }
-        const auto size = variable.address->size;
+        const auto& address = *variable.address;
+        if (variable.type == DataType::FunctionBlock) {
+            fail(variable.location, fmt::format("{} '{}' needs no address at all, not {}", variable.typeSpec.name,
+                                                variable.name, address.toString()));
+        }
+        if (variable.initialValue) {
+            fail(variable.location, fmt::format("'{}' can't have an initial value: its value comes from {}",
+                                                variable.name, address.toString()));
+        }
+        if (variable.typeInfo->isAggregate()) {
+            // Like S7: arrays and structs start at an even byte.
+            const bool startsAtByte = address.size == AccessSize::Byte ||
+                                      (address.size == AccessSize::Bit && address.bit == 0);
+            if (!startsAtByte || address.byteOffset % 2 != 0) {
+                fail(variable.location, fmt::format("{} '{}' needs an even byte address like %MB10 or %DB1.DBB0, not {}",
+                                                    variable.typeInfo->name, variable.name, address.toString()));
+            }
+            return;
+        }
+        const auto size = address.size;
         const bool fits = (variable.type == DataType::Bool && size == AccessSize::Bit) ||
                           (variable.type == DataType::Int && size == AccessSize::Word) ||
                           ((variable.type == DataType::DInt || variable.type == DataType::Real ||
                             variable.type == DataType::Time) &&
                            size == AccessSize::DWord);
         if (!fits) {
-            const char* needed = variable.type == DataType::Bool           ? "a bit address like %IX0.0"
-                                 : variable.type == DataType::Int          ? "a word address like %MW0"
-                                 : variable.type == DataType::FunctionBlock ? "no address at all"
-                                                                            : "a double word address like %MD0";
-            const auto typeText =
-                variable.type == DataType::FunctionBlock ? variable.typeName : std::string(dataTypeName(variable.type));
-            fail(variable.location, fmt::format("{} '{}' needs {}, not {}", typeText, variable.name, needed,
-                                                variable.address->toString()));
-        }
-        if (variable.initialValue) {
-            fail(variable.location, fmt::format("'{}' can't have an initial value: its value comes from {}",
-                                                variable.name, variable.address->toString()));
+            const char* needed = variable.type == DataType::Bool  ? "a bit address like %IX0.0"
+                                 : variable.type == DataType::Int ? "a word address like %MW0"
+                                                                  : "a double word address like %MD0";
+            fail(variable.location, fmt::format("{} '{}' needs {}, not {}", dataTypeName(variable.type), variable.name,
+                                                needed, address.toString()));
         }
     }
 
-    void checkInitialValue(VariableDeclaration& variable) {
-        constantsOnly_ = true;
-        checkExpression(*variable.initialValue);
-        constantsOnly_ = false;
-        checkAssignable(variable.type, *variable.initialValue, variable.name);
+    // Checks an initial value against the type it initializes: constants
+    // only, the right shape ([...] for arrays, (...) for structs), and values
+    // that fit.
+    void checkInitializer(const Type& type, Initializer& initializer, const std::string& name) {
+        std::visit(Overloaded{
+                       [&](ExpressionPtr& expression) {
+                           if (type.isAggregate()) {
+                               fail(initializer.location,
+                                    fmt::format("'{}' is {}: write its initial values as {}", name, type.name,
+                                                type.kind == Type::Kind::Array ? "[1, 2, 3]" : "(field := value, ...)"));
+                           }
+                           constantsOnly_ = true;
+                           checkExpression(*expression);
+                           constantsOnly_ = false;
+                           checkAssignable(type, *expression, name);
+                       },
+                       [&](ArrayInitializer& array) {
+                           if (type.kind != Type::Kind::Array) {
+                               fail(initializer.location, fmt::format("'{}' is {}, not an array, so it can't have [...] "
+                                                                      "initial values",
+                                                                      name, type.name));
+                           }
+                           std::size_t count = 0;
+                           for (auto& item : array.items) {
+                               count += static_cast<std::size_t>(item.repeat);
+                               if (item.value) {
+                                   checkInitializer(*type.element, *item.value, name + "[...]");
+                               }
+                           }
+                           const auto elements = type.leafCount() / std::max<std::size_t>(type.elementLeaves, 1);
+                           if (count > elements) {
+                               fail(initializer.location, fmt::format("too many initial values for '{}': {} for {} "
+                                                                      "elements",
+                                                                      name, count, elements));
+                           }
+                       },
+                       [&](StructInitializer& structure) {
+                           if (type.kind != Type::Kind::Struct) {
+                               fail(initializer.location, fmt::format("'{}' is {}, not a struct, so it can't have "
+                                                                      "(field := ...) initial values",
+                                                                      name, type.name));
+                           }
+                           std::set<std::string> given;
+                           for (auto& field : structure.fields) {
+                               const auto* f = type.field(field.name);
+                               if (f == nullptr) {
+                                   fail(field.location, fmt::format("{} has no field '{}'", type.name, field.name));
+                               }
+                               if (!given.insert(toUpper(field.name)).second) {
+                                   fail(field.location, fmt::format("'{}' is given twice", field.name));
+                               }
+                               checkInitializer(*f->type, *field.value, name + "." + f->name);
+                           }
+                       },
+                   },
+                   initializer.node);
+    }
+
+    // ------------------------------------------------------------ One POU's body
+
+    void checkBody(Pou& pou) {
+        enterPou(pou);
+        loopVariables_.clear();
+        loopDepth_ = 0;
+        checkStatements(pou.body);
     }
 
     std::size_t lookup(const std::string& name, SourceLocation where) const {
@@ -238,25 +521,34 @@ private:
         return {slot, variable.functionBlock};
     }
 
-    // Can a value of `value`'s type be stored in a variable of type `target`
+    // Can a value of `value`'s type be stored in something of type `target`
     // without losing anything?
-    void checkAssignable(DataType target, const Expression& value, const std::string& targetName) const {
+    void checkAssignable(const Type& target, const Expression& value, const std::string& targetName) const {
+        const auto* aggregate = aggregateOf(value);
+        if (target.isAggregate() || aggregate != nullptr) {
+            if (target.isAggregate() && aggregate != nullptr && sameType(target, *aggregate)) {
+                return;
+            }
+            fail(value.location, fmt::format("can't assign {} to '{}', which is {}", typeText(value), targetName,
+                                             target.name));
+        }
         const auto source = value.type;
-        if (source == target) {
+        const auto targetType = target.elementary;
+        if (source == targetType) {
             return;
         }
-        if (source == DataType::AnyInt && (target == DataType::Int || target == DataType::DInt)) {
-            checkLiteralFits(target, value);
+        if (source == DataType::AnyInt && (targetType == DataType::Int || targetType == DataType::DInt)) {
+            checkLiteralFits(targetType, value);
             return;
         }
-        const bool widening = (target == DataType::DInt && source == DataType::Int) ||
-                              (target == DataType::Real && isNumeric(source));
+        const bool widening = (targetType == DataType::DInt && source == DataType::Int) ||
+                              (targetType == DataType::Real && isNumeric(source));
         if (!widening) {
-            const char* hint = isNumeric(source) && isNumeric(target) ? " (values might not fit)"
-                               : target == DataType::Time            ? " (write times like T#500ms)"
-                                                                     : "";
+            const char* hint = isNumeric(source) && isNumeric(targetType) ? " (values might not fit)"
+                               : targetType == DataType::Time            ? " (write times like T#500ms)"
+                                                                         : "";
             fail(value.location, fmt::format("can't assign {} to '{}', which is {}{}", dataTypeName(source),
-                                             targetName, dataTypeName(target), hint));
+                                             targetName, dataTypeName(targetType), hint));
         }
     }
 
@@ -273,14 +565,117 @@ private:
         }
     }
 
+    // ------------------------------------------------------------ Accesses: a, t1.Q, values[i].x
+
+    // Resolves a variable or a part of one, and returns the type of the part.
+    const Type& resolveAccess(Access& access, SourceLocation where) {
+        if (constantsOnly_) {
+            fail(where, fmt::format("initial values must be constants, not variables like '{}'", access.name));
+        }
+        const auto slot = lookup(access.name, where);
+        const VariableDeclaration* variable = &variableAt(slot);
+        std::size_t next = 0; // the first selector still to apply
+
+        if (variable->type == DataType::FunctionBlock) {
+            const Pou* block = variable->functionBlock;
+            const auto* field = access.selectors.empty() ? nullptr : std::get_if<FieldSelector>(&access.selectors[0]);
+            if (field == nullptr) {
+                fail(where, fmt::format("'{}' is a {} instance, not a value; use one of its outputs, like {}.Q",
+                                        access.name, block->name, access.name));
+            }
+            const auto member = findVariable(*block, field->name);
+            if (!member) {
+                fail(where, fmt::format("{} has no input or output called '{}'", block->name, field->name));
+            }
+            const auto& declaration = block->variables[*member];
+            if (declaration.section == VarSection::Local) {
+                fail(where, fmt::format("'{}' is internal to {}; only its inputs and outputs can be read",
+                                        declaration.name, block->name));
+            }
+            access.instanceSlot = slot;
+            access.slot = *member;
+            variable = &declaration;
+            next = 1;
+        } else {
+            access.slot = slot;
+        }
+
+        const Type* type = variable->typeInfo;
+        std::string path = next == 0 ? variable->name : access.name + "." + variable->name;
+        access.leafOffset = 0;
+        access.bitOffset = 0;
+        access.dynamic.clear();
+        for (; next < access.selectors.size(); ++next) {
+            std::visit(Overloaded{
+                           [&](const FieldSelector& field) {
+                               if (type->kind != Type::Kind::Struct) {
+                                   fail(field.location,
+                                        next == 0 && type->kind == Type::Kind::Elementary
+                                            ? fmt::format("'{}' is not a function block instance or a struct, so it "
+                                                          "has no members",
+                                                          path)
+                                            : fmt::format("'{}' is {}, not a struct, so it has no field '{}'", path,
+                                                          type->name, field.name));
+                               }
+                               const auto* f = type->field(field.name);
+                               if (f == nullptr) {
+                                   fail(field.location, fmt::format("{} has no field '{}'", type->name, field.name));
+                               }
+                               access.leafOffset += f->leafOffset;
+                               access.bitOffset += f->bitOffset;
+                               path += "." + f->name;
+                               type = f->type;
+                           },
+                           [&](IndexSelector& index) {
+                               if (type->kind != Type::Kind::Array) {
+                                   fail(index.location, fmt::format("'{}' is {}, not an array", path, type->name));
+                               }
+                               if (index.indices.size() != type->dimensions.size()) {
+                                   fail(index.location, fmt::format("'{}' is {}: it needs {} index{}, not {}", path,
+                                                                    type->name, type->dimensions.size(),
+                                                                    type->dimensions.size() == 1 ? "" : "es",
+                                                                    index.indices.size()));
+                               }
+                               // Row-major: the last index moves fastest.
+                               std::size_t elementsPerStep = 1;
+                               for (std::size_t k = type->dimensions.size(); k-- > 0;) {
+                                   const auto& bounds = type->dimensions[k];
+                                   auto& expression = *index.indices[k];
+                                   requireInteger(expression, "an array index");
+                                   const auto leafStride = elementsPerStep * type->elementLeaves;
+                                   const auto bitStride = elementsPerStep * type->elementBits;
+                                   if (const auto constant = integerConstant(expression)) {
+                                       if (*constant < bounds.low || *constant > bounds.high) {
+                                           fail(expression.location,
+                                                fmt::format("index {} is outside the bounds of '{}' ({}..{})", *constant,
+                                                            path, bounds.low, bounds.high));
+                                       }
+                                       const auto steps = static_cast<std::size_t>(*constant - bounds.low);
+                                       access.leafOffset += steps * leafStride;
+                                       access.bitOffset += steps * bitStride;
+                                   } else {
+                                       access.dynamic.push_back(IndexTerm{&expression, bounds, leafStride, bitStride});
+                                   }
+                                   elementsPerStep *= static_cast<std::size_t>(bounds.length());
+                               }
+                               path += "[...]";
+                               type = type->element;
+                           },
+                       },
+                       access.selectors[next]);
+        }
+        access.type = type;
+        access.directLeaf = access.dynamic.empty() && !variable->address ? variable->leaf + access.leafOffset : kNoSlot;
+        return *type;
+    }
+
     // ------------------------------------------------------------ Expressions
 
     // Works out and records the type of an expression and all its children.
     DataType checkExpression(Expression& expression) {
         expression.type = std::visit(Overloaded{
                                          [&](Literal& literal) { return literalType(literal); },
-                                         [&](VariableRef& variable) { return variableType(variable, expression); },
-                                         [&](MemberRef& member) { return memberType(member, expression); },
+                                         [&](Access& access) { return resolveAccess(access, expression.location).elementary; },
                                          [&](UnaryExpression& unary) { return unaryType(unary, expression); },
                                          [&](BinaryExpression& binary) { return binaryType(binary, expression); },
                                      },
@@ -295,50 +690,16 @@ private:
         return DataType::Real;
     }
 
-    DataType variableType(VariableRef& variable, const Expression& expression) {
-        if (constantsOnly_) {
-            fail(expression.location, fmt::format("initial values must be constants, not variables like '{}'",
-                                                  variable.name));
-        }
-        variable.slot = lookup(variable.name, expression.location);
-        const auto& declaration = variableAt(variable.slot);
-        if (declaration.type == DataType::FunctionBlock) {
-            fail(expression.location, fmt::format("'{}' is a {} instance, not a value; use one of its outputs, "
-                                                  "like {}.Q",
-                                                  variable.name, declaration.functionBlock->name, variable.name));
-        }
-        return declaration.type;
-    }
-
-    DataType memberType(MemberRef& member, const Expression& expression) {
-        if (constantsOnly_) {
-            fail(expression.location, "initial values must be constants");
-        }
-        const auto [instanceSlot, type] = lookupInstance(member.instance, expression.location, "has no members");
-        const auto memberSlot = findVariable(*type, member.member);
-        if (!memberSlot) {
-            fail(expression.location, fmt::format("{} has no input or output called '{}'", type->name, member.member));
-        }
-        const auto& declaration = type->variables[*memberSlot];
-        if (declaration.section == VarSection::Local) {
-            fail(expression.location, fmt::format("'{}' is internal to {}; only its inputs and outputs can be read",
-                                                  declaration.name, type->name));
-        }
-        member.instanceSlot = instanceSlot;
-        member.memberSlot = *memberSlot;
-        return declaration.type;
-    }
-
     DataType unaryType(UnaryExpression& unary, const Expression& expression) {
         const auto operand = checkExpression(*unary.operand);
         if (unary.op == UnaryOperator::Negate) {
             if (!isNumeric(operand) && operand != DataType::Time) {
-                fail(expression.location, fmt::format("'-' needs a number, not {}", dataTypeName(operand)));
+                fail(expression.location, fmt::format("'-' needs a number, not {}", typeText(*unary.operand)));
             }
             return operand;
         }
         if (operand != DataType::Bool) {
-            fail(expression.location, fmt::format("NOT needs a BOOL, not {}", dataTypeName(operand)));
+            fail(expression.location, fmt::format("NOT needs a BOOL, not {}", typeText(*unary.operand)));
         }
         return DataType::Bool;
     }
@@ -349,7 +710,7 @@ private:
         const auto symbol = operatorSymbol(binary.op);
         const auto mismatch = [&](const char* needs) {
             fail(expression.location, fmt::format("'{}' needs {}, but got {} and {}", symbol, needs,
-                                                  dataTypeName(left), dataTypeName(right)));
+                                                  typeText(*binary.left), typeText(*binary.right)));
         };
 
         if (left == DataType::Time || right == DataType::Time) {
@@ -439,14 +800,14 @@ private:
     void requireBool(Expression& condition, const char* what) {
         const auto type = checkExpression(condition);
         if (type != DataType::Bool) {
-            fail(condition.location, fmt::format("{} must be BOOL, not {}", what, dataTypeName(type)));
+            fail(condition.location, fmt::format("{} must be BOOL, not {}", what, typeText(condition)));
         }
     }
 
     void requireInteger(Expression& expression, const char* what) {
         const auto type = checkExpression(expression);
         if (!isInteger(type)) {
-            fail(expression.location, fmt::format("{} must be an integer, not {}", what, dataTypeName(type)));
+            fail(expression.location, fmt::format("{} must be an integer, not {}", what, typeText(expression)));
         }
     }
 
@@ -459,16 +820,25 @@ private:
     }
 
     void check(Assignment& s, SourceLocation where) {
-        s.slot = lookup(s.target, where);
-        const auto& target = variableAt(s.slot);
-        if (target.type == DataType::FunctionBlock) {
-            fail(where, fmt::format("can't assign to '{}': it's a {} instance", s.target, target.functionBlock->name));
+        auto& target = s.target;
+        const auto slot = lookup(target.name, where);
+        const auto& variable = variableAt(slot);
+        if (variable.type == DataType::FunctionBlock) {
+            if (target.selectors.empty()) {
+                fail(where, fmt::format("can't assign to '{}': it's a {} instance", target.name,
+                                        variable.functionBlock->name));
+            }
+            fail(where, fmt::format("can't assign to '{}': set inputs in the call, like {}(IN := ...); outputs are "
+                                    "read-only",
+                                    formatAccess(target), target.name));
         }
-        if (std::find(loopVariables_.begin(), loopVariables_.end(), s.slot) != loopVariables_.end()) {
-            fail(where, fmt::format("'{}' is the variable of a FOR loop and can't be changed inside it", s.target));
+        const auto& type = resolveAccess(target, where);
+        if (target.isPlainVariable() &&
+            std::find(loopVariables_.begin(), loopVariables_.end(), target.slot) != loopVariables_.end()) {
+            fail(where, fmt::format("'{}' is the variable of a FOR loop and can't be changed inside it", target.name));
         }
         checkExpression(*s.value);
-        checkAssignable(target.type, *s.value, s.target);
+        checkAssignable(type, *s.value, formatAccess(target));
     }
 
     void check(CallStatement& s, SourceLocation where) {
@@ -494,7 +864,7 @@ private:
                 fail(argument.location, fmt::format("'{}' is given twice", input.name));
             }
             checkExpression(*argument.value);
-            checkAssignable(input.type, *argument.value, s.instance + "." + input.name);
+            checkAssignable(*input.typeInfo, *argument.value, s.instance + "." + input.name);
             argument.slot = *memberSlot;
         }
     }
@@ -529,14 +899,13 @@ private:
         s.slot = lookup(s.variable, where);
         const auto& variable = variableAt(s.slot);
         if (variable.type != DataType::Int && variable.type != DataType::DInt) {
-            const auto typeText =
-                variable.type == DataType::FunctionBlock ? variable.typeName : std::string(dataTypeName(variable.type));
-            fail(where, fmt::format("the FOR variable '{}' must be INT or DINT, not {}", s.variable, typeText));
+            const auto text = variable.typeInfo ? variable.typeInfo->name : variable.typeSpec.name;
+            fail(where, fmt::format("the FOR variable '{}' must be INT or DINT, not {}", s.variable, text));
         }
         for (Expression* bound : {s.from.get(), s.to.get(), s.step.get()}) {
             if (bound != nullptr) {
                 requireInteger(*bound, "a FOR loop bound");
-                checkAssignable(variable.type, *bound, s.variable);
+                checkAssignable(*variable.typeInfo, *bound, s.variable);
             }
         }
         loopVariables_.push_back(s.slot);
@@ -569,7 +938,10 @@ private:
     void check(ReturnStatement&, SourceLocation) const {}
 
     CompilationUnit& unit_;
-    std::unordered_map<std::string, const Pou*> types_; // upper-case name -> function block (user or standard)
+    std::unordered_map<std::string, const Pou*> functionBlocks_;          // upper-case name -> user or standard block
+    std::unordered_map<std::string, TypeDeclaration*> declaredTypes_;     // upper-case name -> TYPE declaration
+    std::unordered_map<const TypeDeclaration*, const Type*> resolvedTypes_;
+    std::vector<const TypeDeclaration*> resolving_; // the TYPE declarations being built, to catch cycles
 
     // State for the POU being checked
     Pou* pou_ = nullptr;
@@ -597,7 +969,10 @@ std::map<std::uint16_t, std::size_t> dataBlocksUsedBy(const CompilationUnit& uni
             continue;
         }
         const auto& a = *variable.address;
-        const std::size_t width = a.size == AccessSize::Word ? 2 : a.size == AccessSize::DWord ? 4 : 1;
+        std::size_t width = a.size == AccessSize::Word ? 2 : a.size == AccessSize::DWord ? 4 : 1;
+        if (variable.typeInfo != nullptr && variable.typeInfo->isAggregate()) {
+            width = variable.typeInfo->bitSize / 8;
+        }
         auto& size = sizes[a.dbNumber];
         size = std::max(size, a.byteOffset + width);
     }

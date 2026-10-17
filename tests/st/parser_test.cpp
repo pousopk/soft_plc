@@ -69,9 +69,9 @@ TEST_CASE("parseStatements reads a sequence of assignments") {
     auto statements = parseStatements("a := 1;\n b := a + 2;");
     REQUIRE(statements.has_value());
     REQUIRE(statements->size() == 2);
-    CHECK(assignmentAt(*statements, 0).target == "a");
+    CHECK(formatAccess(assignmentAt(*statements, 0).target) == "a");
     CHECK(formatExpression(*assignmentAt(*statements, 0).value) == "1");
-    CHECK(assignmentAt(*statements, 1).target == "b");
+    CHECK(formatAccess(assignmentAt(*statements, 1).target) == "b");
     CHECK(formatExpression(*assignmentAt(*statements, 1).value) == "(a + 2)");
     CHECK((*statements)[1].location == SourceLocation{2, 2});
 }

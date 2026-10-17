@@ -5,6 +5,7 @@
 #include "util/overloaded.hpp"
 #include "util/text.hpp"
 #include <bit>
+#include <charconv>
 #include <cmath>
 #include <utility>
 #include <fmt/format.h>
@@ -15,9 +16,9 @@ namespace softplc::st {
 // The memory of one POU instance.
 struct Instance {
     const Pou* type = nullptr;
-    // One entry per variable of `type`, in declaration order. Unused for
-    // function block variables (see `children`) and AT variables (they live
-    // in the process image).
+    // The leaves of every variable of `type`, in declaration order (see
+    // VariableDeclaration::leaf). Function block variables have none (see
+    // `children`), and neither do AT variables: they live in the process image.
     std::vector<Value> values;
     // One entry per variable; set only for function block variables.
     std::vector<std::unique_ptr<Instance>> children;
@@ -45,6 +46,22 @@ template <class T> bool compare(BinaryOperator op, T a, T b) {
 bool isComparison(BinaryOperator op) {
     return op == BinaryOperator::Equal || op == BinaryOperator::NotEqual || op == BinaryOperator::Less ||
            op == BinaryOperator::LessEqual || op == BinaryOperator::Greater || op == BinaryOperator::GreaterEqual;
+}
+
+// The message for an array index out of bounds, the same for both engines.
+std::string indexError(std::int64_t index, const ArrayDimension& bounds) {
+    return fmt::format("array index {} is outside the bounds {}..{}", index, bounds.low, bounds.high);
+}
+
+// The process image address of one leaf of an AT variable, `bit` bits from its start.
+Address leafAddress(const VariableDeclaration& variable, std::size_t bit, DataType type) {
+    const auto& start = *variable.address;
+    const auto first = start.byteOffset * 8 + (start.size == AccessSize::Bit ? start.bit : 0);
+    Address address = start;
+    address.byteOffset = (first + bit) / 8;
+    address.bit = static_cast<unsigned>((first + bit) % 8);
+    address.size = type == DataType::Bool ? AccessSize::Bit : type == DataType::Int ? AccessSize::Word : AccessSize::DWord;
+    return address;
 }
 
 std::optional<std::size_t> findVariable(const Pou& pou, std::string_view name) {
@@ -103,24 +120,62 @@ std::unique_ptr<Instance> Interpreter::createInstance(const Pou& pou) {
     auto instance = std::make_unique<Instance>();
     instance->type = &pou;
     instance->children.resize(pou.variables.size());
-    instance->values.reserve(pou.variables.size());
+    instance->values.resize(pou.leafCount);
     for (std::size_t slot = 0; slot < pou.variables.size(); ++slot) {
         const auto& variable = pou.variables[slot];
         if (variable.type == DataType::FunctionBlock) {
             instance->children[slot] = createInstance(*variable.functionBlock);
-            instance->values.push_back(Value{}); // placeholder, never used
-        } else if (variable.initialValue) {
-            // Initial values are constants (the analyzer checked), so this
-            // doesn't need a process image or any other variable.
-            instance->values.push_back(convert(evaluate(*variable.initialValue, *instance), variable.type));
-        } else {
-            instance->values.push_back(defaultValue(variable.type));
+        } else if (!variable.address) {
+            initialize(*instance, *variable.typeInfo, variable.leaf, variable.initialValue.get());
         }
     }
     if (pou.builtin) {
         instance->native = createBuiltin(pou.name);
     }
     return instance;
+}
+
+// Sets the leaves of one value of `type`, starting at `leaf`: from the
+// initializer where it gives a value, from the STRUCT's field defaults
+// elsewhere, and 0 / FALSE for everything else. Initial values are constants
+// (the analyzer checked), so evaluating them needs no process image.
+void Interpreter::initialize(Instance& instance, const Type& type, std::size_t leaf, const Initializer* initializer) {
+    switch (type.kind) {
+    case Type::Kind::Elementary: {
+        const auto* expression = initializer != nullptr ? std::get_if<ExpressionPtr>(&initializer->node) : nullptr;
+        instance.values[leaf] = expression != nullptr ? convert(evaluate(**expression, instance), type.elementary)
+                                                      : defaultValue(type.elementary);
+        return;
+    }
+    case Type::Kind::Struct: {
+        const auto* given = initializer != nullptr ? std::get_if<StructInitializer>(&initializer->node) : nullptr;
+        for (const auto& field : type.fields) {
+            const Initializer* value = field.initialValue;
+            if (given != nullptr) {
+                for (const auto& f : given->fields) {
+                    if (toUpper(f.name) == toUpper(field.name)) {
+                        value = f.value.get();
+                    }
+                }
+            }
+            initialize(instance, *field.type, leaf + field.leafOffset, value);
+        }
+        return;
+    }
+    case Type::Kind::Array: {
+        std::vector<const Initializer*> values; // one per element, in order; null: the default
+        if (const auto* given = initializer != nullptr ? std::get_if<ArrayInitializer>(&initializer->node) : nullptr) {
+            for (const auto& item : given->items) {
+                values.insert(values.end(), static_cast<std::size_t>(item.repeat), item.value.get());
+            }
+        }
+        const auto count = type.leafCount() / type.elementLeaves;
+        for (std::size_t e = 0; e < count; ++e) {
+            initialize(instance, *type.element, leaf + e * type.elementLeaves, e < values.size() ? values[e] : nullptr);
+        }
+        return;
+    }
+    }
 }
 
 void Interpreter::runCycle(ProcessImage& image, TimePoint now) {
@@ -144,46 +199,113 @@ void Interpreter::run(Instance& instance) {
 
 namespace {
 
-// A variable found by path: the instance that holds it, its slot there, and
-// its spelling as declared.
-template <class InstanceType> struct Resolved {
-    InstanceType* instance;
-    std::size_t slot;
+// A variable found by path: where it is, its type and its spelling as declared.
+struct Resolved {
+    Instance* instance;
+    const VariableDeclaration* variable;
+    std::size_t leaf;
+    std::size_t bit;
+    DataType type;
     std::string path;
 };
 
-// Walks "a.b.c" down the instance tree: every part but the last must be a
-// function block instance, and the last must be an elementary variable.
-//
-// A template, so the same code works on a `const Instance` (for reading) and
-// on an `Instance` (for writing).
-template <class InstanceType>
-std::optional<Resolved<InstanceType>> resolvePath(InstanceType& root, std::string_view path) {
-    InstanceType* instance = &root;
+// Reads an optionally signed decimal number from the front of `text`.
+std::optional<std::int64_t> takeNumber(std::string_view& text) {
+    std::int64_t value = 0;
+    const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (ec != std::errc{} || ptr == text.data()) {
+        return std::nullopt;
+    }
+    text.remove_prefix(static_cast<std::size_t>(ptr - text.data()));
+    return value;
+}
+
+// Walks a path like "fast.offTimer.ET" or "line[2].start.x" down the
+// instance tree and into the variable: every name before the variable must
+// be a function block instance, and the path must end at one BOOL, INT,
+// DINT, REAL or TIME (not a whole array or struct).
+std::optional<Resolved> resolvePath(Instance& root, std::string_view path) {
+    Instance* instance = &root;
     std::string spelled;
+    const VariableDeclaration* variable = nullptr;
     for (;;) {
-        const auto dot = path.find('.');
-        const auto slot = findVariable(*instance->type, path.substr(0, dot));
+        const auto end = path.find_first_of(".[");
+        const auto slot = findVariable(*instance->type, path.substr(0, end));
         if (!slot) {
             return std::nullopt;
         }
-        const auto& variable = instance->type->variables[*slot];
-        spelled += variable.name;
-        const bool last = dot == std::string_view::npos;
-        const bool isInstance = variable.type == DataType::FunctionBlock;
-        if (last) {
-            if (isInstance) {
-                return std::nullopt; // an instance has no single value
-            }
-            return Resolved<InstanceType>{instance, *slot, spelled};
+        variable = &instance->type->variables[*slot];
+        spelled += variable->name;
+        path.remove_prefix(end == std::string_view::npos ? path.size() : end);
+        if (variable->type != DataType::FunctionBlock) {
+            break;
         }
-        if (!isInstance) {
-            return std::nullopt; // "count.x": count has no members
+        if (path.empty() || path.front() != '.') {
+            return std::nullopt; // an instance has no single value
         }
-        instance = instance->children[*slot].get();
+        path.remove_prefix(1);
         spelled += '.';
-        path.remove_prefix(dot + 1);
+        instance = instance->children[*slot].get();
     }
+
+    const Type* type = variable->typeInfo;
+    std::size_t leaf = 0;
+    std::size_t bit = 0;
+    while (!path.empty()) {
+        if (path.front() == '.') {
+            path.remove_prefix(1);
+            const auto end = path.find_first_of(".[");
+            const auto* field = type->kind == Type::Kind::Struct ? type->field(path.substr(0, end)) : nullptr;
+            if (field == nullptr) {
+                return std::nullopt;
+            }
+            spelled += "." + field->name;
+            leaf += field->leafOffset;
+            bit += field->bitOffset;
+            type = field->type;
+            path.remove_prefix(end == std::string_view::npos ? path.size() : end);
+        } else if (path.front() == '[' && type->kind == Type::Kind::Array) {
+            path.remove_prefix(1);
+            std::vector<std::int64_t> indices;
+            for (;;) {
+                const auto index = takeNumber(path);
+                if (!index) {
+                    return std::nullopt;
+                }
+                indices.push_back(*index);
+                if (!path.empty() && path.front() == ',') {
+                    path.remove_prefix(1);
+                    continue;
+                }
+                break;
+            }
+            if (path.empty() || path.front() != ']' || indices.size() != type->dimensions.size()) {
+                return std::nullopt;
+            }
+            path.remove_prefix(1);
+            std::size_t element = 0;
+            std::string text = "[";
+            for (std::size_t k = 0; k < indices.size(); ++k) {
+                const auto& bounds = type->dimensions[k];
+                if (indices[k] < bounds.low || indices[k] > bounds.high) {
+                    return std::nullopt;
+                }
+                element = element * static_cast<std::size_t>(bounds.length()) +
+                          static_cast<std::size_t>(indices[k] - bounds.low);
+                text += fmt::format("{}{}", k == 0 ? "" : ",", indices[k]);
+            }
+            spelled += text + "]";
+            leaf += element * type->elementLeaves;
+            bit += element * type->elementBits;
+            type = type->element;
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (type->isAggregate()) {
+        return std::nullopt; // a whole array or struct has no single value
+    }
+    return Resolved{instance, variable, leaf, bit, type->elementary, spelled};
 }
 
 void collectVariables(const Instance& instance, const std::string& prefix, std::vector<VariableInfo>& out) {
@@ -192,8 +314,10 @@ void collectVariables(const Instance& instance, const std::string& prefix, std::
         const auto& variable = variables[slot];
         if (variable.type == DataType::FunctionBlock) {
             collectVariables(*instance.children[slot], prefix + variable.name + ".", out);
-        } else {
-            out.push_back(VariableInfo{prefix + variable.name, variable.type});
+            continue;
+        }
+        for (const auto& leaf : variable.typeInfo->leaves) {
+            out.push_back(VariableInfo{prefix + variable.name + leaf.suffix, leaf.type});
         }
     }
 }
@@ -207,19 +331,19 @@ std::vector<VariableInfo> Interpreter::variables() const {
 }
 
 std::optional<VariableInfo> Interpreter::describe(std::string_view path) const {
-    const auto found = resolvePath(std::as_const(*root_), path);
+    const auto found = resolvePath(*root_, path);
     if (!found) {
         return std::nullopt;
     }
-    return VariableInfo{found->path, found->instance->type->variables[found->slot].type};
+    return VariableInfo{found->path, found->type};
 }
 
 std::optional<Value> Interpreter::valueOf(std::string_view path, const ProcessImage& image) const {
-    const auto found = resolvePath(std::as_const(*root_), path);
+    const auto found = resolvePath(*root_, path);
     if (!found) {
         return std::nullopt;
     }
-    return load(*found->instance, found->slot, &image);
+    return loadLeaf(Place{found->instance, found->variable, found->leaf, found->bit}, found->type, &image);
 }
 
 bool Interpreter::setValue(std::string_view path, const Value& value, ProcessImage& image) {
@@ -228,23 +352,40 @@ bool Interpreter::setValue(std::string_view path, const Value& value, ProcessIma
         return false;
     }
     ImageBinding binding(image_, image); // AT variables write to the process image
-    store(*found->instance, found->slot, value);
+    storeLeaf(Place{found->instance, found->variable, found->leaf, found->bit}, found->type, value);
     return true;
 }
 
-Value Interpreter::valueOf(std::size_t slot, const ProcessImage& image) const { return load(*root_, slot, &image); }
-
 // ---------------------------------------------------------------- Variables
 
-Value Interpreter::load(const Instance& self, std::size_t slot, const ProcessImage* image) const {
-    const auto& variable = self.type->variables[slot];
-    if (!variable.address) {
-        return self.values[slot];
+Interpreter::Place Interpreter::wholeVariable(Instance& instance, std::size_t slot) {
+    return Place{&instance, &instance.type->variables[slot], 0, 0};
+}
+
+Interpreter::Place Interpreter::place(const Access& access, Instance& self) {
+    Instance* instance = access.instanceSlot == kNoSlot ? &self : self.children[access.instanceSlot].get();
+    Place result{instance, &instance->type->variables[access.slot], access.leafOffset, access.bitOffset};
+    for (const auto& term : access.dynamic) {
+        const auto index = toInteger(evaluate(*term.index, self));
+        if (index < term.bounds.low || index > term.bounds.high) {
+            throw RuntimeError{indexError(index, term.bounds), term.index->location};
+        }
+        const auto steps = static_cast<std::size_t>(index - term.bounds.low);
+        result.leaf += steps * term.leafStride;
+        result.bit += steps * term.bitStride;
     }
-    // AT variables: the analyzer made sure the address size matches the type
-    // (bit for BOOL, word for INT, double word for DINT/REAL/TIME).
-    const auto raw = image->read(*variable.address);
-    switch (variable.type) {
+    return result;
+}
+
+Value Interpreter::loadLeaf(const Place& place, DataType type, const ProcessImage* image) const {
+    const auto& variable = *place.variable;
+    if (!variable.address) {
+        return place.instance->values[variable.leaf + place.leaf];
+    }
+    // AT variables: the analyzer made sure the address fits the type, and
+    // the S7 layout puts every leaf at an address of the right size.
+    const auto raw = image->read(leafAddress(variable, place.bit, type));
+    switch (type) {
     case DataType::Bool: return raw != 0;
     case DataType::Int: return std::int64_t{static_cast<std::int16_t>(raw)};
     case DataType::DInt:
@@ -252,24 +393,35 @@ Value Interpreter::load(const Instance& self, std::size_t slot, const ProcessIma
     case DataType::Real:
         // The 32 bits in memory *are* the float: reinterpret them, don't convert the number.
         return static_cast<double>(std::bit_cast<float>(raw));
-    default: return defaultValue(variable.type);
+    default: return defaultValue(type);
     }
 }
 
-void Interpreter::store(Instance& self, std::size_t slot, const Value& value) {
-    const auto& variable = self.type->variables[slot];
-    const auto converted = convert(value, variable.type);
+void Interpreter::storeLeaf(const Place& place, DataType type, const Value& value) {
+    const auto& variable = *place.variable;
+    const auto converted = convert(value, type);
     if (!variable.address) {
-        self.values[slot] = converted;
+        place.instance->values[variable.leaf + place.leaf] = converted;
         return;
     }
     std::uint32_t raw = 0;
-    switch (variable.type) {
+    switch (type) {
     case DataType::Bool: raw = std::get<bool>(converted) ? 1u : 0u; break;
     case DataType::Real: raw = std::bit_cast<std::uint32_t>(static_cast<float>(std::get<double>(converted))); break;
     default: raw = static_cast<std::uint32_t>(std::get<std::int64_t>(converted)); break; // INT, DINT, TIME
     }
-    image_->write(*variable.address, raw);
+    image_->write(leafAddress(variable, place.bit, type), raw);
+}
+
+// A whole array or struct, leaf by leaf (the analyzer checked both sides
+// have the same type).
+void Interpreter::copyAggregate(const Place& from, const Place& to, const Type& type) {
+    for (std::size_t k = 0; k < type.leafCount(); ++k) {
+        const auto& leaf = type.leaves[k];
+        const auto value = loadLeaf(Place{from.instance, from.variable, from.leaf + k, from.bit + leaf.bitOffset},
+                                    leaf.type, image_);
+        storeLeaf(Place{to.instance, to.variable, to.leaf + k, to.bit + leaf.bitOffset}, leaf.type, value);
+    }
 }
 
 // ---------------------------------------------------------------- Statements
@@ -287,7 +439,16 @@ Interpreter::Flow Interpreter::execute(const Statement& statement, Instance& sel
     return std::visit(
         Overloaded{
             [&](const Assignment& s) {
-                store(self, s.slot, evaluate(*s.value, self));
+                // The value first, then where it goes (the VM does the same).
+                if (s.target.type->isAggregate()) {
+                    const auto from = place(std::get<Access>(s.value->node), self);
+                    copyAggregate(from, place(s.target, self), *s.target.type);
+                } else if (s.target.directLeaf != kNoSlot) {
+                    self.values[s.target.directLeaf] = convert(evaluate(*s.value, self), s.target.type->elementary);
+                } else {
+                    const auto value = evaluate(*s.value, self);
+                    storeLeaf(place(s.target, self), s.target.type->elementary, value);
+                }
                 return Flow::Normal;
             },
             [&](const CallStatement& s) {
@@ -343,7 +504,13 @@ Interpreter::Flow Interpreter::execute(const Statement& statement, Instance& sel
 void Interpreter::call(const CallStatement& s, Instance& self) {
     Instance& instance = *self.children[s.instanceSlot];
     for (const auto& argument : s.arguments) {
-        store(instance, argument.slot, evaluate(*argument.value, self));
+        const auto input = wholeVariable(instance, argument.slot);
+        const auto& type = *input.variable->typeInfo;
+        if (type.isAggregate()) {
+            copyAggregate(place(std::get<Access>(argument.value->node), self), input, type);
+        } else {
+            storeLeaf(input, type.elementary, evaluate(*argument.value, self));
+        }
     }
     run(instance);
 }
@@ -357,10 +524,11 @@ Interpreter::Flow Interpreter::executeFor(const ForStatement& s, SourceLocation 
         throw RuntimeError{"FOR loop with BY 0 would never end", where};
     }
     const auto type = self.type->variables[s.slot].type;
+    const auto variable = wholeVariable(self, s.slot);
 
-    store(self, s.slot, evaluate(*s.from, self));
+    storeLeaf(variable, type, evaluate(*s.from, self));
     for (;;) {
-        const auto current = toInteger(load(self, s.slot, image_));
+        const auto current = toInteger(loadLeaf(variable, type, image_));
         if (step > 0 ? current > to : current < to) {
             return Flow::Normal;
         }
@@ -370,7 +538,7 @@ Interpreter::Flow Interpreter::executeFor(const ForStatement& s, SourceLocation 
         if (flow == Flow::Return) return Flow::Return;
         // Wraps like the PLC would: FOR i := 0 TO 32767 never ends with an INT
         // (i wraps from 32767 to -32768), which the watchdog then catches.
-        store(self, s.slot, wrapInteger(add(current, step), type));
+        storeLeaf(variable, type, wrapInteger(add(current, step), type));
     }
 }
 
@@ -445,13 +613,6 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
         case Op::StoreInt16: values[in.a] = std::int64_t{static_cast<std::int16_t>((--sp)->i)}; break;
         case Op::StoreInt32: values[in.a] = std::int64_t{static_cast<std::int32_t>((--sp)->i)}; break;
         case Op::StoreReal: values[in.a] = roundToReal((--sp)->r); break;
-        case Op::LoadAt: *sp++ = toSlot(load(self, in.a, image_)); break;
-        case Op::StoreAt: {
-            const std::size_t slot = in.a;
-            --sp;
-            store(self, slot, fromSlot(*sp, self.type->variables[slot].type));
-            break;
-        }
 
         case Op::LoadMemberBool: (sp++)->i = std::get<bool>(self.children[in.a]->values[in.b]) ? 1 : 0; break;
         case Op::LoadMemberInt: (sp++)->i = std::get<std::int64_t>(self.children[in.a]->values[in.b]); break;
@@ -467,6 +628,37 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
 
         case Op::LoadTemp: *sp++ = temps[in.a]; break;
         case Op::StoreTemp: temps[in.a] = *--sp; break;
+
+        case Op::Index: {
+            const auto& index = chunk.indices[in.a];
+            const auto value = sp[-1].i;
+            if (value < index.bounds.low || value > index.bounds.high) {
+                throw RuntimeError{indexError(value, index.bounds), where()};
+            }
+            sp[-1].i = (value - index.bounds.low) * static_cast<std::int64_t>(index.stride);
+            break;
+        }
+        case Op::LoadPlace: {
+            const auto& info = chunk.places[in.a];
+            const auto offset = (--sp)->i;
+            *sp++ = toSlot(loadLeaf(vmPlace(info, self, offset), info.type->elementary, image_));
+            break;
+        }
+        case Op::StorePlace: {
+            const auto& info = chunk.places[in.a];
+            const auto offset = (--sp)->i;
+            const auto type = info.type->elementary;
+            storeLeaf(vmPlace(info, self, offset), type, fromSlot(*--sp, type));
+            break;
+        }
+        case Op::CopyPlace: {
+            const auto& source = chunk.places[in.a];
+            const auto& target = chunk.places[in.b];
+            const auto targetOffset = (--sp)->i;
+            const auto sourceOffset = (--sp)->i;
+            copyAggregate(vmPlace(source, self, sourceOffset), vmPlace(target, self, targetOffset), *target.type);
+            break;
+        }
 
         case Op::AddI: --sp; sp[-1].i = add(sp[-1].i, sp->i); break;
         case Op::SubI: --sp; sp[-1].i = subtract(sp[-1].i, sp->i); break;
@@ -540,14 +732,29 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
     }
 }
 
+// A PlaceInfo plus the run-time part of its offset, as a Place.
+Interpreter::Place Interpreter::vmPlace(const PlaceInfo& info, Instance& self, std::int64_t offset) const {
+    Instance* instance = info.instanceSlot == kNoSlot ? &self : self.children[info.instanceSlot].get();
+    const auto& variable = instance->type->variables[info.slot];
+    const auto dynamic = static_cast<std::size_t>(offset);
+    if (variable.address) {
+        return Place{instance, &variable, 0, info.bitOffset + dynamic};
+    }
+    return Place{instance, &variable, info.leafOffset + dynamic, 0};
+}
+
 // ---------------------------------------------------------------- Expressions
 
 Value Interpreter::evaluate(const Expression& expression, Instance& self) {
     return std::visit(Overloaded{
                           [](const Literal& literal) { return literal.value; },
-                          [&](const VariableRef& variable) { return load(self, variable.slot, image_); },
-                          [&](const MemberRef& member) {
-                              return self.children[member.instanceSlot]->values[member.memberSlot];
+                          [&](const Access& access) {
+                              if (access.directLeaf != kNoSlot) {
+                                  const Instance& owner =
+                                      access.instanceSlot == kNoSlot ? self : *self.children[access.instanceSlot];
+                                  return owner.values[access.directLeaf];
+                              }
+                              return loadLeaf(place(access, self), access.type->elementary, image_);
                           },
                           [&](const UnaryExpression& unary) -> Value {
                               const auto operand = evaluate(*unary.operand, self);

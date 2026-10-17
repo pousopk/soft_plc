@@ -129,8 +129,16 @@ const std::vector<Pou>& builtinFunctionBlocks() {
         if (!parsed) {
             throw std::logic_error("built-in function block interfaces don't parse: " + parsed.error().message);
         }
+        // The analyzer never sees these blocks, so fill in what it would:
+        // every variable is elementary, so variable i is simply leaf i.
         for (auto& block : *parsed) {
             block.builtin = true;
+            for (std::size_t i = 0; i < block.variables.size(); ++i) {
+                auto& variable = block.variables[i];
+                variable.typeInfo = elementaryType(variable.type);
+                variable.leaf = i;
+            }
+            block.leafCount = block.variables.size();
         }
         return std::move(*parsed);
     }();
