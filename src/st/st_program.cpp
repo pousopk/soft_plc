@@ -5,7 +5,18 @@
 namespace softplc::st {
 
 StProgram::StProgram(CompilationUnit unit, StopHandler onStop, std::uint64_t loopLimit, Engine engine)
-    : interpreter_(std::move(unit), loopLimit, engine), onStop_(std::move(onStop)) {}
+    : loopLimit_(loopLimit), interpreter_(std::move(unit), loopLimit, engine), onStop_(std::move(onStop)) {}
+
+Interpreter::Takeover StProgram::replace(CompilationUnit unit) {
+    Interpreter next(std::move(unit), loopLimit_, interpreter_.engine());
+    auto result = next.takeOver(interpreter_);
+    interpreter_ = std::move(next);
+    for (auto it = forces_.begin(); it != forces_.end();) {
+        it = interpreter_.describe(it->first) ? std::next(it) : forces_.erase(it);
+    }
+    stopError_.reset();
+    return result;
+}
 
 void StProgram::execute(ProcessImage& image, const CycleContext& context) {
     if (stopped()) {

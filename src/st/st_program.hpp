@@ -35,6 +35,13 @@ public:
     const Interpreter& interpreter() const { return interpreter_; }
     Interpreter& interpreter() { return interpreter_; }
 
+    // Online change: from the next cycle on, runs `unit` instead, keeping
+    // the values of every variable it shares with the running program (see
+    // Interpreter::takeOver). Forces on variables that no longer exist are
+    // dropped. A program in STOP goes back to RUN: the change may be its fix.
+    // Call it between cycles only.
+    Interpreter::Takeover replace(CompilationUnit unit);
+
     // Forces a variable (by path, as in Interpreter::describe) to `value`.
     // Returns false if there's no such variable.
     bool force(std::string_view path, const Value& value);
@@ -47,6 +54,7 @@ private:
     void applyForces(ProcessImage& image);
     void stop(ProcessImage& image, const RuntimeError& error);
 
+    std::uint64_t loopLimit_;
     Interpreter interpreter_;
     StopHandler onStop_;
     std::optional<RuntimeError> stopError_;

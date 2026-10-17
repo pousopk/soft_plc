@@ -1,4 +1,5 @@
 #include "monitor/monitor_service.hpp"
+#include "st/analyzer.hpp"
 #include "st/value_text.hpp"
 #include "util/text.hpp"
 #include <chrono>
@@ -21,12 +22,30 @@ std::vector<std::string> splitWords(std::string_view text) {
 
 double toMicroseconds(Duration d) { return std::chrono::duration<double, std::micro>(d).count(); }
 
+// LOAD's source: \n is a line end, \\ a backslash.
+std::string unescape(std::string_view text) {
+    std::string result;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '\\' && i + 1 < text.size()) {
+            ++i;
+            result += text[i] == 'n' ? '\n' : text[i];
+        } else {
+            result += text[i];
+        }
+    }
+    return result;
+}
+
 } // namespace
 
 MonitorService::MonitorService(st::StProgram& program, ProcessImage& image, const ScanCycle& cycle)
     : program_(program), image_(image), cycle_(cycle) {}
 
 std::string MonitorService::handle(std::string_view request) {
+    // LOAD's argument is a whole program, spaces and all: not split in words.
+    if (request.size() > 5 && toUpper(request.substr(0, 5)) == "LOAD ") {
+        return load(request.substr(5));
+    }
     auto words = splitWords(request);
     if (words.empty()) {
         return "ERR empty request";
@@ -41,7 +60,7 @@ std::string MonitorService::handle(std::string_view request) {
     if (command == "UNFORCE") return unforce(words);
     if (command == "FORCES") return forces();
     if (command == "STATUS") return status();
-    return fmt::format("ERR unknown command '{}' (try LIST, READ, WRITE, FORCE, UNFORCE, FORCES, STATUS)", command);
+    return fmt::format("ERR unknown command '{}' (try LIST, READ, WRITE, FORCE, UNFORCE, FORCES, STATUS, LOAD)", command);
 }
 
 std::string MonitorService::list() const {
@@ -131,6 +150,31 @@ std::string MonitorService::status() const {
         // The error goes last because it contains spaces: everything after "error=" is the message.
         reply += fmt::format(" error=line {}, column {}: {}", error->location.line, error->location.column,
                              error->message);
+    }
+    return reply;
+}
+
+std::string MonitorService::load(std::string_view escapedSource) {
+    const auto source = unescape(escapedSource);
+    auto unit = st::compileProgram(source);
+    if (!unit) {
+        return fmt::format("ERR line {}, column {}: {}", unit.error().location.line, unit.error().location.column,
+                           unit.error().message);
+    }
+    // Data blocks can be added while running, but not resized: their bytes
+    // are what S7 clients and AT variables see.
+    for (const auto& [number, size] : st::dataBlocksUsedBy(*unit)) {
+        if (!image_.hasDataBlock(number)) {
+            image_.addDataBlock(number, size);
+        } else if (image_.dataBlock(number).size() < size) {
+            return fmt::format("ERR DB{} would need {} bytes, but it has {}: restart soft_plc to change its size",
+                               number, size, image_.dataBlock(number).size());
+        }
+    }
+    const auto result = program_.replace(std::move(*unit));
+    auto reply = fmt::format("OK kept={} initialized={}", result.kept, result.initialized.size());
+    for (const auto& path : result.initialized) {
+        reply += ' ' + path;
     }
     return reply;
 }

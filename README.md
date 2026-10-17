@@ -41,6 +41,8 @@ When a program stops (Ctrl+C or a runtime error), `soft_plc` prints the final va
 
 The GUI needs GLFW and OpenGL development files (`libglfw3-dev`, `libgl-dev`); without them the rest still builds. The protocol is one line of text per request, so it can also be used by hand, e.g. `nc 127.0.0.1 5020`, then `READ fast.out`, `FORCE doneLamp TRUE`, `STATUS`. See `src/monitor/monitor_service.hpp` for every command. With `--monitor`, a runtime error leaves the PLC in STOP (instead of exiting) so the monitor can show why.
 
+**Online change:** `LOAD <program>` (the source on one line, `\n` for line ends) replaces the running program between two cycles, without stopping. Every variable the new version shares with the old one, with the same name and type, keeps its value, and standard blocks keep their hidden state, so a running timer goes on timing and a counter keeps its count. New variables, or ones whose type changed, start at their initial value; the reply lists them. `ladder_editor` uses it for its Download button.
+
 ### S7 server
 
 ```bash

@@ -69,6 +69,20 @@ public:
     Interpreter(Interpreter&&) noexcept;
     Interpreter& operator=(Interpreter&&) noexcept;
 
+    // Online change: this interpreter, for a changed program, takes over
+    // the memory of `old`, the one running until now. Every variable that
+    // exists in both, with the same name and the same type, keeps its value,
+    // and a standard block (TON, CTU, ...) keeps its hidden state too, so a
+    // running timer goes on timing. Function block instances are matched by
+    // name and block type, and their variables the same way, recursively. AT
+    // variables live in the process image and keep their values anyway.
+    // `old` is left without its standard blocks' state: throw it away.
+    struct Takeover {
+        std::size_t kept = 0;                 // variables that kept their value
+        std::vector<std::string> initialized; // new, or changed type: they start at their initial value
+    };
+    Takeover takeOver(Interpreter& old);
+
     // Runs the program body once. `now` is the cycle's timestamp, which the
     // timers use. Throws RuntimeError on errors.
     void runCycle(ProcessImage& image, TimePoint now);

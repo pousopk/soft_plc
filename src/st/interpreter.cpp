@@ -76,6 +76,28 @@ std::optional<std::size_t> findVariable(const Pou& pou, std::string_view name) {
     return std::nullopt;
 }
 
+// Online change: can memory laid out for type `a` be read as type `b`? The
+// same elementary type; arrays with the same bounds of such elements;
+// structs with the same fields, in the same order, of such types.
+bool sameLayout(const Type& a, const Type& b) {
+    if (a.kind != b.kind) {
+        return false;
+    }
+    switch (a.kind) {
+    case Type::Kind::Elementary:
+        return a.elementary == b.elementary;
+    case Type::Kind::Array:
+        return a.dimensions == b.dimensions && sameLayout(*a.element, *b.element);
+    case Type::Kind::Struct:
+        return a.fields.size() == b.fields.size() &&
+               std::equal(a.fields.begin(), a.fields.end(), b.fields.begin(), [](const auto& x, const auto& y) {
+                   return toUpper(x.name) == toUpper(y.name) && x.leafOffset == y.leafOffset &&
+                          sameLayout(*x.type, *y.type);
+               });
+    }
+    return false;
+}
+
 // Connects the interpreter to a process image for the duration of one cycle,
 // and disconnects it again when the cycle ends, even if it ends with an
 // exception. This is RAII: the destructor does the cleanup.
@@ -334,6 +356,52 @@ void collectVariables(const Instance& instance, const std::string& prefix, std::
 }
 
 } // namespace
+
+namespace {
+
+// One instance's part of an online change: `now` (of the new program) takes
+// what it can from `before` (of the old one), variable by variable.
+void takeOverInstance(Instance& now, Instance& before, const std::string& prefix, Interpreter::Takeover& result) {
+    if (now.native && before.native) {
+        now.native = std::move(before.native); // a TON's start time, a CTU's count, ...
+    }
+    for (std::size_t slot = 0; slot < now.type->variables.size(); ++slot) {
+        const auto& variable = now.type->variables[slot];
+        const auto path = prefix + variable.name;
+        const auto oldSlot = findVariable(*before.type, variable.name);
+        const auto* old = oldSlot ? &before.type->variables[*oldSlot] : nullptr;
+        if (variable.type == DataType::FunctionBlock) {
+            if (old != nullptr && old->type == DataType::FunctionBlock &&
+                toUpper(old->functionBlock->name) == toUpper(variable.functionBlock->name)) {
+                takeOverInstance(*now.children[slot], *before.children[*oldSlot], path + ".", result);
+            } else {
+                result.initialized.push_back(path);
+            }
+            continue;
+        }
+        if (variable.address) {
+            ++result.kept; // in the process image, which stays
+            continue;
+        }
+        if (old == nullptr || old->address || old->type == DataType::FunctionBlock ||
+            !sameLayout(*variable.typeInfo, *old->typeInfo)) {
+            result.initialized.push_back(path);
+            continue;
+        }
+        const auto leaves = variable.typeInfo->leafCount();
+        std::copy_n(before.values.begin() + static_cast<std::ptrdiff_t>(old->leaf), leaves,
+                    now.values.begin() + static_cast<std::ptrdiff_t>(variable.leaf));
+        ++result.kept;
+    }
+}
+
+} // namespace
+
+Interpreter::Takeover Interpreter::takeOver(Interpreter& old) {
+    Takeover result;
+    takeOverInstance(*root_, *old.root_, "", result);
+    return result;
+}
 
 std::vector<VariableInfo> Interpreter::variables() const {
     std::vector<VariableInfo> result;

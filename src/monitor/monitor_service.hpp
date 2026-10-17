@@ -19,6 +19,12 @@ namespace softplc::monitor {
 //   FORCES                   OK lamp=TRUE
 //   STATUS                   OK RUN cycles=1234 cycle_ms=10 avg_us=12.5 max_us=80.1 overruns=0
 //                            OK STOP cycles=... error=line 3, column 8: division by zero
+//   LOAD <source>            OK kept=25 initialized=2 boxes newFlag
+//                            (online change: runs a new version of the program
+//                            from the next cycle, keeping the values of the
+//                            variables it shares with the running one; the
+//                            source is one line, with \n for each line end and
+//                            \\ for a backslash; initialized lists what starts over)
 //
 // It must only be called between cycles (from ScanCycle's idle task), so it
 // always sees a consistent state and never races with the program.
@@ -36,6 +42,7 @@ private:
     std::string unforce(const std::vector<std::string>& args);
     std::string forces() const;
     std::string status() const;
+    std::string load(std::string_view escapedSource);
 
     st::StProgram& program_;
     ProcessImage& image_;

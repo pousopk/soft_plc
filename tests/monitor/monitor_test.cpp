@@ -201,7 +201,7 @@ TEST_CASE("STATUS shows RUN, or STOP with the error") {
 TEST_CASE("Unknown and empty requests") {
     Plc plc;
     CHECK(plc.service.handle("BOGUS") ==
-          "ERR unknown command 'BOGUS' (try LIST, READ, WRITE, FORCE, UNFORCE, FORCES, STATUS)");
+          "ERR unknown command 'BOGUS' (try LIST, READ, WRITE, FORCE, UNFORCE, FORCES, STATUS, LOAD)");
     CHECK(plc.service.handle("   ") == "ERR empty request");
 }
 
@@ -311,4 +311,46 @@ TEST_CASE("The whole path: client -> server -> service -> PLC") {
 
     stop = true;
     scan.join();
+}
+
+// ---------------------------------------------------------------- Online change
+
+namespace {
+
+// As a client sends a program in LOAD: one line, \n for line ends, \\ for backslashes.
+std::string escaped(std::string_view source) {
+    std::string result;
+    for (const char c : source) {
+        if (c == '\n') {
+            result += "\\n";
+        } else if (c == '\\') {
+            result += "\\\\";
+        } else {
+            result += c;
+        }
+    }
+    return result;
+}
+
+} // namespace
+
+TEST_CASE("LOAD changes the running program and keeps its values") {
+    Plc plc;
+    plc.cycles(5);
+    CHECK(plc.service.handle("READ count") == "OK 5");
+    std::string changed = kProgram;
+    changed.replace(changed.find("count := count + 1;"), 19, "count := count + 100;");
+    changed.replace(changed.find("    result : INT;\n"), 18, "    result : INT;\n    extra : BOOL := TRUE;\n");
+    // Kept: count, lamp, divisor, result, and the TON's IN, PT, Q and ET.
+    CHECK(plc.service.handle("LOAD " + escaped(changed)) == "OK kept=8 initialized=1 extra");
+    plc.cycles(1);
+    CHECK(plc.service.handle("READ count extra") == "OK 105 TRUE");
+}
+
+TEST_CASE("LOAD refuses a program that doesn't compile, and the old one goes on") {
+    Plc plc;
+    const auto reply = plc.service.handle("LOAD PROGRAM Main\\n    x := 1;\\nEND_PROGRAM");
+    CHECK(reply.rfind("ERR line 2, column 5: ", 0) == 0);
+    plc.cycles(1);
+    CHECK(plc.service.handle("READ count") == "OK 1");
 }
