@@ -75,6 +75,10 @@ Measured on this machine at milestone 7 (Release build, µs per cycle). Arrays a
 
 For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release`.
 
+### Using soft_plc from another project
+
+`add_subdirectory(path/to/soft_plc soft_plc EXCLUDE_FROM_ALL)` gives two libraries: `soft_plc_language` (Structured Text: lexer, parser, analyzer, both engines, the standard library; no networking) and `soft_plc_core` (plus the scan cycle, monitoring and the S7 server). Included like that, soft_plc doesn't build its programs or tests (`SOFT_PLC_BUILD_PROGRAMS` is off unless soft_plc is the top-level project). `ladder_editor` uses `soft_plc_language` to colour ST and show compile errors as you type.
+
 ## Structured Text supported so far
 
 - `PROGRAM … END_PROGRAM` with `VAR … END_VAR` blocks

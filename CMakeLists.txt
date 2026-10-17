@@ -66,11 +66,12 @@ if(SOFT_PLC_SANITIZERS)
   )
 endif()
 
-# --- Core library: everything except the demo executable ---
-add_library(soft_plc_core STATIC
+# --- The language: Structured Text, the standard library and the memory ---
+# Everything needed to read, check and run ST, without networking. Other
+# projects (like ladder_editor) use this to check ST code.
+add_library(soft_plc_language STATIC
   src/core/address.cpp
   src/core/process_image.cpp
-  src/core/scan_cycle.cpp
   src/stdlib/timers.cpp
   src/stdlib/counters.cpp
   src/st/diagnostic.cpp
@@ -84,6 +85,16 @@ add_library(soft_plc_core STATIC
   src/st/builtins.cpp
   src/st/functions.cpp
   src/st/value_text.cpp
+)
+target_include_directories(soft_plc_language PUBLIC src)
+target_link_libraries(soft_plc_language
+  PUBLIC  soft_plc_options tl::expected
+  PRIVATE fmt::fmt
+)
+
+# --- Core library: the language, plus the scan cycle, monitoring and S7 ---
+add_library(soft_plc_core STATIC
+  src/core/scan_cycle.cpp
   src/monitor/monitor_service.cpp
   src/monitor/monitor_server.cpp
   src/monitor/monitor_client.cpp
@@ -91,10 +102,17 @@ add_library(soft_plc_core STATIC
 )
 target_include_directories(soft_plc_core PUBLIC src)
 target_link_libraries(soft_plc_core
-  PUBLIC  soft_plc_options tl::expected Threads::Threads
+  PUBLIC  soft_plc_language soft_plc_options tl::expected Threads::Threads
   PRIVATE snap7_static
   PRIVATE fmt::fmt
 )
+
+# When another project includes soft_plc (add_subdirectory), it only wants
+# the libraries: the programs, the GUI and the tests are left out.
+option(SOFT_PLC_BUILD_PROGRAMS "Build soft_plc, its tools, the monitor GUI and the tests" ${PROJECT_IS_TOP_LEVEL})
+if(NOT SOFT_PLC_BUILD_PROGRAMS)
+  return()
+endif()
 
 # --- Demo executable ---
 add_executable(soft_plc
