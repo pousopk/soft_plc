@@ -4,6 +4,8 @@ The milestone lessons in [`../lessons/`](../lessons/README.md) follow the order 
 
 Read them in order. Each builds on the ones before.
 
+For **why** the code is designed this way (which container where, who owns what, why one thread runs the PLC), see the [design notes](../design/README.md).
+
 | # | Lesson | You'll understand |
 |---|---|---|
 | 1 | [Files, the build, and how `main()` starts the PLC](01-files-and-startup.md) | headers vs `.cpp`, namespaces, CMake targets, who owns which object, destruction order |

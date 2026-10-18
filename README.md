@@ -111,6 +111,7 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 | `tests/` | doctest unit tests, mirroring `src/` |
 | `docs/lessons/` | What each milestone teaches about PLCs and C++, with review questions |
 | `docs/cpp/` | The C++ in the finished code, one topic per lesson, with review questions |
+| `docs/design/` | Design notes: why the code is shaped as it is (containers, ownership, errors, threads), with review questions |
 | `docs/guide/` | The programming guide: how to write programs for soft_plc (every example is compiled by the tests) |
 
 ## Components
