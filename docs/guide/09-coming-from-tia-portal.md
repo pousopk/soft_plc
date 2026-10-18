@@ -1,4 +1,4 @@
-# 8. Coming from TIA Portal
+# 9. Coming from TIA Portal
 
 soft_plc's Structured Text is IEC 61131-3, and SCL in TIA Portal is Siemens' version of the same language. Most code reads the same; this chapter lists what's different.
 
@@ -46,3 +46,4 @@ soft_plc's Structured Text is IEC 61131-3, and SCL in TIA Portal is Siemens' ver
 - **Narrowing conversions:** `DINT_TO_INT` keeps the low 16 bits and `REAL_TO_INT` limits to the INT range. TIA Portal's conversions set `ENO` to FALSE when a value doesn't fit; soft_plc has no `ENO`.
 - **Calls in order** must give every input; calls by name may leave inputs out (they get their default).
 - **Compile errors** are reported one at a time: the first error stops compilation.
+- **Download in RUN:** soft_plc keeps every variable whose name and type didn't change, in every block, with no memory reserve to set up; TIA Portal can keep values when variables are added to optimized blocks with a memory reserve, and reinitializes a block when its interface changes in ways the reserve can't absorb. In both, a new initial value doesn't change a variable that keeps its value (chapter 8, *Changing a running program*).

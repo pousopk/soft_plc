@@ -141,3 +141,39 @@ TEST_CASE("Online change drops forces on variables that are gone, and leaves STO
     broken.execute(image, CycleContext{TimePoint{}, 0});
     CHECK_FALSE(broken.stopped());
 }
+
+TEST_CASE("The online change example in the programming guide (chapter 8) does what it says") {
+    const char* first = "PROGRAM Main\nVAR\n    count : INT;\n    t : TON;\n    lamp AT %QX0.0 : BOOL;\nEND_VAR\n"
+                        "    count := count + 1;\n    t(IN := TRUE, PT := T#10s);\n    lamp := t.Q;\nEND_PROGRAM\n";
+    const char* second = "PROGRAM Main\nVAR\n    count : INT;\n    t : TON;\n    lamp AT %QX0.0 : BOOL;\n"
+                         "    tens : INT := 1;\nEND_VAR\n"
+                         "    count := count + 10;\n    tens := count / 10;\n    t(IN := TRUE, PT := T#20s);\n"
+                         "    lamp := t.Q;\nEND_PROGRAM\n";
+    ProcessImage image(4, 4, 8);
+    StProgram program(compile(first), {}, 1'000'000, testEngine());
+    auto now = TimePoint{} + 1h;
+    const auto cycles = [&](int n) {
+        for (int i = 0; i < n; ++i) {
+            program.execute(image, CycleContext{now, 0});
+            now += 10ms;
+        }
+    };
+    const auto integer = [&](const char* path) {
+        return std::get<std::int64_t>(*program.interpreter().valueOf(path, image));
+    };
+    cycles(400); // 4 s
+    CHECK(integer("count") == 400);
+
+    const auto result = program.replace(compile(second));
+    CHECK(result.kept == 6); // count, lamp, t.IN, t.PT, t.Q, t.ET
+    CHECK(result.initialized == std::vector<std::string>{"tens"});
+    CHECK(integer("tens") == 1);
+    cycles(1);
+    CHECK(integer("count") == 410);
+    CHECK(integer("tens") == 41);
+    CHECK(integer("t.ET") == 4000);
+    cycles(1599); // up to 19.99 s after the start
+    CHECK_FALSE(image.readBit(Area::Output, 0, 0));
+    cycles(1); // 20 s: the new preset
+    CHECK(image.readBit(Area::Output, 0, 0));
+}

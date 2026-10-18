@@ -13,7 +13,7 @@ If you know SCL, most of it will look familiar; [chapter 9](09-coming-from-tia-p
 | 5 | [Function blocks](05-function-blocks.md) | writing and calling FBs; TON, TOF, TP, CTU, CTD, R_TRIG, F_TRIG, SR, RS |
 | 6 | [Functions](06-functions.md) | writing FUNCTIONs; ABS, SQRT, MIN, MAX, LIMIT, SEL, MUX, ROUND, the conversions |
 | 7 | [Arrays and structs](07-arrays-and-structs.md) | `ARRAY`, `TYPE … STRUCT`, initial values, copying, function block interfaces |
-| 8 | [Memory, S7 and going online](08-memory-s7-and-online.md) | the process image, data blocks, the S7 layout, monitoring, forcing, STOP |
+| 8 | [Memory, S7 and going online](08-memory-s7-and-online.md) | the process image, data blocks, the S7 layout, monitoring, forcing, STOP, changing a running program |
 | 9 | [Coming from TIA Portal](09-coming-from-tia-portal.md) | what's the same, what's different, what's missing |
 
 Every complete program in this guide is compiled by the test suite (`tests/st/guide_test.cpp`), and the examples marked as errors are checked to fail with the message shown. If the language changes, the guide's tests fail until the guide is updated.

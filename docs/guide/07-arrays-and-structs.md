@@ -1,4 +1,4 @@
-# 6. Arrays and structs
+# 7. Arrays and structs
 
 ## Arrays
 

@@ -1,4 +1,4 @@
-# 7. Memory, S7 and going online
+# 8. Memory, S7 and going online
 
 ## The memory areas
 
@@ -96,10 +96,78 @@ or type the requests yourself, one per line (`nc 127.0.0.1 5020`):
 | `UNFORCE lamp` | `OK` | |
 | `FORCES` | `OK lamp=TRUE` | |
 | `STATUS` | `OK RUN cycles=1234 cycle_ms=10 avg_us=12.5 max_us=80.1 overruns=0` | in STOP: `OK STOP … error=…` |
+| `LOAD <program>` | `OK kept=12 initialized=1 tens` | a new version of the program, see below |
 
 Paths are case-insensitive: `fast.offTimer.ET`, `cameras[2].score`, `grid[1,3]`. Values are written as in a program: `TRUE`, `-5`, `16#FF`, `2.5`, `T#2s`.
 
 A forced variable is written just before the program runs (so the program reads the forced value) and again just after (so the program's own writes don't reach the outputs). Forcing an input is the usual way to test a program without hardware.
+
+## Changing a running program
+
+A program can be changed **while it runs**, without stopping the PLC or losing its memory: an *online change*, like a download in RUN in TIA Portal. The belt keeps running, the counters keep their counts, a timer that's timing goes on timing.
+
+The new version is sent with `LOAD`, the whole source on one line, with `\n` for each line end and `\\` for a backslash. `ladder_editor`'s **Download** button does it for you; by hand:
+
+```bash
+printf 'LOAD %s\n' "$(sed 's/\\/\\\\/g' new.st | awk '{printf "%s\\n", $0}')" | nc -q1 127.0.0.1 5020
+```
+
+soft_plc compiles it and, between two cycles, switches to it. If it doesn't compile, it's refused with the error (`ERR line 2, column 5: …`) and the old version goes on running.
+
+### What keeps its value
+
+| In the new version | What happens |
+|---|---|
+| a variable with the **same name and type** as before | keeps its value |
+| a **function block instance** with the same name and block type | keeps its values, matched the same way, variable by variable, all the way down |
+| a **standard block** (TON, CTU, R_TRIG, …) | keeps its hidden state too: a running TON goes on timing from when it started, a CTU keeps its count |
+| a variable with `AT` | keeps its value: it lives in the process image, which isn't replaced |
+| a **new** variable, or one whose **type changed** | starts at its initial value; the reply lists them (`initialized=1 tens`) |
+| a variable that's **gone** | is dropped, and so is a force on it |
+
+Names are matched ignoring case, as everywhere in ST. "The same type" means exactly the same: an INT that became a DINT, an array with other bounds, or a struct with a field added all start over.
+
+For example, this program runs for a while:
+
+```st
+PROGRAM Main
+VAR
+    count : INT;
+    t : TON;
+    lamp AT %QX0.0 : BOOL;
+END_VAR
+    count := count + 1;
+    t(IN := TRUE, PT := T#10s);
+    lamp := t.Q;
+END_PROGRAM
+```
+
+and after 4 s, this version is loaded:
+
+```st
+PROGRAM Main
+VAR
+    count : INT;
+    t : TON;
+    lamp AT %QX0.0 : BOOL;
+    tens : INT := 1;
+END_VAR
+    count := count + 10;
+    tens := count / 10;
+    t(IN := TRUE, PT := T#20s);
+    lamp := t.Q;
+END_PROGRAM
+```
+
+`count` goes on from 400 (now in steps of 10), `t` goes on timing from 4 s and switches the lamp on at 20 s (its new preset, read every call), and `tens` is new, so it starts at its initial value, 1, until the new code first assigns it. The reply is `OK kept=6 initialized=1 tens`: `count`, `lamp`, and the four variables of `t` (`IN`, `PT`, `Q`, `ET`).
+
+### Things to know
+
+- **Initial values only apply to variables that start over.** Changing `count : INT;` to `count : INT := 100;` does nothing to a running `count`: it exists in both versions, so it keeps its value. To give it a new value, write it (`WRITE count 100`).
+- **A fix for an error doesn't reset the values that caused it.** If the PLC stopped on `a := 1 / b;` with `b` at 0, a new version goes back to RUN (an online change always does), but `b` is still 0: the new code has to handle it, or `b` has to be written first.
+- **Data blocks** used with `AT` can be added by an online change, but not made bigger: S7 clients see their bytes. A version that needs a bigger data block is refused; restart soft_plc for that.
+- **The switch happens between two cycles**, like every monitoring request, so no cycle runs half of each version.
+- To start over with **every** value reset, restart soft_plc (in `ladder_editor`'s simulator: **Restart**).
 
 ## S7 clients
 
