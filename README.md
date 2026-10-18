@@ -135,3 +135,7 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 7. Bytecode compiler and VM, benchmarked against the tree-walking interpreter
 8. Arrays and structs, with the S7 memory layout for data blocks, and the programming guide
 9. FUNCTIONs and the standard functions (math, MIN/MAX/LIMIT/SEL/MUX, rounding, conversions)
+
+## License
+
+MIT: see [LICENSE](LICENSE).
