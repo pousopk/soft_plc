@@ -1100,7 +1100,8 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
             }
             if (isStringFunction(call.builtin)) {
                 const auto temp = info.resultTemp == kNoSlot ? 0 : self.tempBase + static_cast<std::int64_t>(info.resultTemp);
-                *sp++ = toSlot(applyStringBuiltin(pool_, call.builtin, std::span(inputs.data(), count), temp, where()));
+                *sp++ = toSlot(applyStringBuiltin(pool_, call.builtin, std::span(inputs.data(), count), temp,
+                                                  call.argumentTypes[0], call.resultType, where()));
             } else {
                 *sp++ = toSlot(applyBuiltin(call.builtin, call.resultType, std::span(inputs.data(), count), where()));
             }
@@ -1227,7 +1228,8 @@ Value Interpreter::callBuiltin(const CallExpression& call, Instance& self, const
     }
     if (isStringFunction(call.builtin)) {
         const auto temp = expression.stringTemp == kNoSlot ? std::int64_t{0} : tempHandle(self, expression);
-        return applyStringBuiltin(pool_, call.builtin, std::span(values.data(), count), temp, expression.location);
+        return applyStringBuiltin(pool_, call.builtin, std::span(values.data(), count), temp, call.argumentTypes[0],
+                                  call.resultType, expression.location);
     }
     return applyBuiltin(call.builtin, call.resultType, std::span(values.data(), count), expression.location);
 }

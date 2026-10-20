@@ -276,6 +276,9 @@ enum class BuiltinFunction {
     Min, Max, Limit, Sel, Mux,
     Shl, Shr, Rol, Ror, // shift and rotate a bit string
     Len, Left, Right, Mid, Concat, Insert, Delete, Replace, Find, // texts (see string_functions.hpp)
+    ToString, FromString,    // INT_TO_STRING, STRING_TO_INT, ...: a value as text, and back
+    TextToText,              // STRING_TO_WSTRING, WSTRING_TO_STRING
+    CharToText, TextToChar,  // CHAR_TO_STRING, STRING_TO_CHAR (and the W versions)
     Convert, // BOOL_TO_INT, DINT_TO_INT, REAL_TO_DINT, ...: from argumentTypes[0] to the result type
     DWordToReal, RealToDWord, // copy the 32 bits unchanged, e.g. to decode a float received as a DWORD
 };

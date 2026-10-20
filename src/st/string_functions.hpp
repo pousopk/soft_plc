@@ -17,7 +17,8 @@ bool isStringFunction(BuiltinFunction function);
 // and lengths as integers. A text result is made in `resultTemp` (cut to
 // its capacity) and its handle returned; LEN and FIND give an integer.
 // Throws RuntimeError (at `where`) for a position or length outside the text.
+// For the conversions, `from` is the input's type and `to` the result's.
 Value applyStringBuiltin(StringPool& pool, BuiltinFunction function, std::span<const Value> arguments,
-                         std::int64_t resultTemp, SourceLocation where);
+                         std::int64_t resultTemp, DataType from, DataType to, SourceLocation where);
 
 } // namespace softplc::st

@@ -1205,6 +1205,11 @@ private:
         case BuiltinFunction::Convert:
         case BuiltinFunction::DWordToReal:
         case BuiltinFunction::RealToDWord:
+        case BuiltinFunction::ToString:
+        case BuiltinFunction::FromString:
+        case BuiltinFunction::TextToText:
+        case BuiltinFunction::CharToText:
+        case BuiltinFunction::TextToChar:
             checkAssignable(*elementaryType(signature.from), first, name);
             types = {signature.from};
             return signature.to;

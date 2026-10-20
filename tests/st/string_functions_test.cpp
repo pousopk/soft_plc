@@ -103,3 +103,36 @@ TEST_CASE("String function arguments are checked") {
     CHECK(errorOf("s := MID('a', 1);") == "MID needs 3 arguments, not 2");
     CHECK(errorOf("w := LEFT(\"abc\", 1); n := FIND(w, \"b\");").empty());
 }
+
+TEST_CASE("Values convert to text as the monitor shows them") {
+    CHECK(textOf("INT_TO_STRING(-5)") == u"-5");
+    CHECK(textOf("WORD_TO_STRING(WORD#255)") == u"16#00FF");
+    CHECK(textOf("REAL_TO_STRING(2.5)") == u"2.5");
+    CHECK(textOf("TIME_TO_STRING(T#1s500ms)") == u"T#1s500ms");
+    CHECK(textOf("BOOL_TO_STRING(TRUE)") == u"TRUE");
+    CHECK(textOf("LINT_TO_STRING(LINT#-9223372036854775807)") == u"-9223372036854775807");
+    CHECK(Run("w := UDINT_TO_WSTRING(UDINT#4000000000);").text("w") == u"4000000000");
+}
+
+TEST_CASE("Text converts to values, and text that isn't one stops the PLC") {
+    CHECK(integerOf("STRING_TO_INT('42')") == 42);
+    CHECK(integerOf("STRING_TO_INT(' -7 ')") == -7);
+    CHECK(integerOf("REAL_TO_INT(STRING_TO_REAL('1.5'))") == 2);
+    CHECK(integerOf("DINT_TO_INT(TIME_TO_DINT(STRING_TO_TIME('T#2s')))") == 2000);
+    CHECK(integerOf("WORD_TO_INT(WSTRING_TO_WORD(\"16#00FF\"))") == 255);
+    CHECK_THROWS_WITH(Run("n := STRING_TO_INT('x');"), "STRING_TO_INT: 'x' is not an INT");
+    CHECK_THROWS_WITH(Run("n := STRING_TO_INT('70000');"), "STRING_TO_INT: '70000' is not an INT");
+}
+
+TEST_CASE("Characters and texts convert into each other") {
+    CHECK(Run("w := STRING_TO_WSTRING('ab');").text("w") == u"ab");
+    CHECK(Run("s := WSTRING_TO_STRING(\"A$20AC\");").text("s") == u"A?");
+    CHECK(Run("u := CHAR_TO_USINT('A');").integer("u") == 65);
+    CHECK(Run("c := USINT_TO_CHAR(66);").text("c") == u"B");
+    CHECK(Run("c := STRING_TO_CHAR('');").integer("c") == 0);
+    CHECK(Run("c := STRING_TO_CHAR('xyz');").text("c") == u"x");
+    CHECK(Run("s := CHAR_TO_STRING('q');").text("s") == u"q");
+    CHECK(Run("c := WCHAR_TO_CHAR(WCHAR#\"$20AC\");").text("c") == u"?");
+    CHECK(Run("c := WCHAR_TO_CHAR(WCHAR#\"A\");").text("c") == u"A");
+    CHECK(Run("c := BYTE_TO_CHAR(BYTE#16#41);").text("c") == u"A");
+}

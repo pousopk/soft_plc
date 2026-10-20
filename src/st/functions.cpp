@@ -42,6 +42,22 @@ bool conversionExists(DataType from, DataType to) {
         return false;
     }
     const auto bitsOrInteger = [](DataType t) { return isIntegerType(t) || isBitString(t); };
+    // Texts: to and from every value that has a text form, and each other;
+    // a character to and from a text of its own width.
+    if (isStringType(from) || isStringType(to)) {
+        const auto text = isStringType(from) ? from : to;
+        const auto other = isStringType(from) ? to : from;
+        const auto ownChar = text == DataType::String ? DataType::Char : DataType::WChar;
+        return bitsOrInteger(other) || other == DataType::Real || other == DataType::Bool || other == DataType::Time ||
+               isStringType(other) || other == ownChar;
+    }
+    // Characters: CHAR with BYTE and USINT, WCHAR with WORD and UINT, and each other.
+    if (isCharType(from) || isCharType(to)) {
+        const auto c = isCharType(from) ? from : to;
+        const auto other = isCharType(from) ? to : from;
+        return isCharType(other) || (c == DataType::Char && (other == DataType::Byte || other == DataType::USInt)) ||
+               (c == DataType::WChar && (other == DataType::Word || other == DataType::UInt));
+    }
     if (from == DataType::Time || to == DataType::Time) {
         return from == DataType::DInt || to == DataType::DInt;
     }
@@ -143,6 +159,11 @@ std::optional<BuiltinSignature> findBuiltinFunction(std::string_view name) {
             if (conversionExists(from, to) && upper == fmt::format("{}_TO_{}", dataTypeName(from), dataTypeName(to))) {
                 const auto function = from == DataType::DWord && to == DataType::Real   ? BuiltinFunction::DWordToReal
                                       : from == DataType::Real && to == DataType::DWord ? BuiltinFunction::RealToDWord
+                                      : isStringType(from) && isStringType(to)          ? BuiltinFunction::TextToText
+                                      : isCharType(from) && isStringType(to)            ? BuiltinFunction::CharToText
+                                      : isStringType(from) && isCharType(to)            ? BuiltinFunction::TextToChar
+                                      : isStringType(to)                                ? BuiltinFunction::ToString
+                                      : isStringType(from)                              ? BuiltinFunction::FromString
                                                                                         : BuiltinFunction::Convert;
                 return BuiltinSignature{function, from, to};
             }
@@ -288,6 +309,9 @@ Value applyBuiltin(BuiltinFunction function, DataType result, std::span<const Va
             if (isReal(in)) {
                 return realToInteger(roundHalfEven(toReal(in)), result); // REAL_TO_INT, REAL_TO_DINT
             }
+            if (result == DataType::Char && toInteger(in) > 0xFF) {
+                return std::int64_t{'?'}; // WCHAR_TO_CHAR: a character a CHAR can't hold
+            }
             return wrapInteger(toInteger(in), result); // DINT_TO_INT keeps the low 16 bits, like a PLC
         }
     }
@@ -308,6 +332,11 @@ Value applyBuiltin(BuiltinFunction function, DataType result, std::span<const Va
     case BuiltinFunction::Delete:
     case BuiltinFunction::Replace:
     case BuiltinFunction::Find:
+    case BuiltinFunction::ToString:
+    case BuiltinFunction::FromString:
+    case BuiltinFunction::TextToText:
+    case BuiltinFunction::CharToText:
+    case BuiltinFunction::TextToChar:
     case BuiltinFunction::None:
         break;
     }
