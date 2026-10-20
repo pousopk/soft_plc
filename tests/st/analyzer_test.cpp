@@ -180,3 +180,12 @@ TEST_CASE("Integers widen only where no value can be lost") {
     CHECK(p("d := d + ud;") == "can't assign LINT to 'd', which is DINT (values might not fit)");
     CHECK(p("l := 9223372036854775807;").empty());
 }
+
+TEST_CASE("Typed literals must fit their type, and are checked like variables of it") {
+    CHECK(errorOf(program("small := INT#40000;")) == "INT#40000 doesn't fit in INT (-32768 to 32767)");
+    CHECK(errorOf(program("small := USINT#-1;")) == "USINT#-1 doesn't fit in USINT (0 to 255)");
+    CHECK(errorOf(program("small := WORD#1;")) == "can't assign WORD to 'small', which is INT (convert with WORD_TO_INT)");
+    CHECK(errorOf(program("big := DINT#16#7FFF_FFFF; small := SINT#5;")) == "");
+    CHECK(errorOf(program("flag := BOOL#2;")) == "BOOL# takes 0, 1, TRUE or FALSE, not 2");
+    CHECK(errorOf(program("small := INT#2.5;")) == "INT# needs an integer, not 2.5");
+}

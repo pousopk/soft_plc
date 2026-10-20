@@ -1065,7 +1065,7 @@ private:
     // Works out and records the type of an expression and all its children.
     DataType checkExpression(Expression& expression) {
         expression.type = std::visit(Overloaded{
-                                         [&](Literal& literal) { return literalType(literal); },
+                                         [&](Literal& literal) { return literalType(literal, expression.location); },
                                          [&](Access& access) { return resolveAccess(access, expression.location).elementary; },
                                          [&](CallExpression& call) {
                                              call.resultType = callType(call, expression.location);
@@ -1078,7 +1078,18 @@ private:
         return expression.type;
     }
 
-    static DataType literalType(const Literal& literal) {
+    DataType literalType(const Literal& literal, SourceLocation where) const {
+        if (literal.type != DataType::Unknown) {
+            // A typed literal like INT#5: the parser checked the kind of value.
+            if (const auto* number = std::get_if<std::int64_t>(&literal.value)) {
+                const auto [low, high] = integerRange(literal.type);
+                if (*number < low || *number > high) {
+                    fail(where, fmt::format("{}#{} doesn't fit in {} ({} to {})", dataTypeName(literal.type), *number,
+                                            dataTypeName(literal.type), low, high));
+                }
+            }
+            return literal.type;
+        }
         if (literal.isTime) return DataType::Time;
         if (std::holds_alternative<bool>(literal.value)) return DataType::Bool;
         if (std::holds_alternative<std::int64_t>(literal.value)) return DataType::AnyInt;

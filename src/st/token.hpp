@@ -12,6 +12,7 @@ enum class TokenKind {
     Integer,       // 42, 1_000, 16#FF, 2#1010
     Real,          // 3.14, 1.5E3
     Time,          // T#500ms, TIME#1m30s (value: milliseconds)
+    TypePrefix,    // INT# in INT#5 or WORD# in WORD#16#FF (text: the type name)
     DirectAddress, // %IX0.0, %MW10
     True,          // TRUE
     False,         // FALSE

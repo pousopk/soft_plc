@@ -169,7 +169,8 @@ enum class BinaryOperator {
 
 struct Literal {
     Value value;
-    bool isTime = false; // T#... literals hold milliseconds in an int64
+    bool isTime = false;                // T#... literals hold milliseconds in an int64
+    DataType type = DataType::Unknown;  // set for typed literals like INT#5
 };
 
 // `.name` after a variable: a struct field, or a function block's input or output.

@@ -141,3 +141,17 @@ TEST_CASE("Lexical errors report what went wrong and where") {
         CHECK(result.error().location == c.location);
     }
 }
+
+TEST_CASE("A type name and '#' start a typed literal") {
+    using K = TokenKind;
+    CHECK(kindsOf("INT#5") == std::vector<K>{K::TypePrefix, K::Integer, K::EndOfFile});
+    CHECK(kindsOf("word#16#FF00") == std::vector<K>{K::TypePrefix, K::Integer, K::EndOfFile});
+    CHECK(kindsOf("REAL#2.5") == std::vector<K>{K::TypePrefix, K::Real, K::EndOfFile});
+    CHECK(tokenize("word#16#FF00")->front().text == "word");
+    CHECK(std::get<std::int64_t>((*tokenize("WORD#16#FF00"))[1].value) == 0xFF00);
+    CHECK(single("T#5s").kind == K::Time);
+    CHECK(single("TIME#5s").kind == K::Time);
+    const auto error = tokenize("FOO#5");
+    REQUIRE_FALSE(error.has_value());
+    CHECK(error.error().message == "unexpected character '#'");
+}

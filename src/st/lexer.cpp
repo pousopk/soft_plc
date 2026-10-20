@@ -1,4 +1,5 @@
 #include "st/lexer.hpp"
+#include "st/ast.hpp"
 #include "util/text.hpp"
 #include <algorithm>
 #include <cctype>
@@ -13,6 +14,7 @@ const char* tokenKindName(TokenKind kind) {
     case TokenKind::Integer: return "integer";
     case TokenKind::Real: return "real number";
     case TokenKind::Time: return "TIME literal";
+    case TokenKind::TypePrefix: return "typed literal";
     case TokenKind::DirectAddress: return "address";
     case TokenKind::True: return "'TRUE'";
     case TokenKind::False: return "'FALSE'";
@@ -217,6 +219,10 @@ private:
         const auto upper = toUpper(text);
         if ((upper == "T" || upper == "TIME") && peek() == '#') {
             return timeLiteral(start, begin);
+        }
+        if (peek() == '#' && elementaryTypeFromName(upper)) {
+            advance(); // '#': the value follows as its own token, e.g. INT#5 or WORD#16#FF
+            return Token{TokenKind::TypePrefix, std::move(text), start, {}};
         }
 
         auto kind = TokenKind::Identifier;

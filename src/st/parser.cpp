@@ -622,6 +622,7 @@ private:
         case TokenKind::Time:
             advance();
             return makeExpression(Literal{std::get<std::int64_t>(token.value), true}, token.location);
+        case TokenKind::TypePrefix: return typedLiteral();
         case TokenKind::Identifier: {
             const auto location = token.location;
             const auto name = token.text;
@@ -644,6 +645,49 @@ private:
         }
         default: fail(token, fmt::format("expected an expression, found {}", describe(token)));
         }
+    }
+
+    // INT#5, INT#-5, WORD#16#FF00, REAL#2, BOOL#1: a literal with exactly that type.
+    ExpressionPtr typedLiteral() {
+        const Token prefix = advance();
+        const auto type = *elementaryTypeFromName(prefix.text);
+        const auto name = std::string(dataTypeName(type));
+        const bool negative = match(TokenKind::Minus);
+        const Token value = advance();
+        Literal literal;
+        literal.type = type;
+        const auto sign = [&](auto number) { return negative ? -number : number; };
+        switch (value.kind) {
+        case TokenKind::Integer: {
+            const auto number = sign(std::get<std::int64_t>(value.value));
+            if (type == DataType::Bool) {
+                if (number != 0 && number != 1) {
+                    fail(value, fmt::format("BOOL# takes 0, 1, TRUE or FALSE, not {}", number));
+                }
+                literal.value = number == 1;
+            } else if (type == DataType::Real) {
+                literal.value = static_cast<double>(number);
+            } else {
+                literal.value = number;
+            }
+            break;
+        }
+        case TokenKind::Real:
+            if (type != DataType::Real) {
+                fail(value, fmt::format("{}# needs an integer, not {}", name, value.text));
+            }
+            literal.value = sign(std::get<double>(value.value));
+            break;
+        case TokenKind::True:
+        case TokenKind::False:
+            if (type != DataType::Bool || negative) {
+                fail(value, fmt::format("{}# needs a number, not {}", name, value.text));
+            }
+            literal.value = value.kind == TokenKind::True;
+            break;
+        default: fail(value, fmt::format("expected a value after {}#, found {}", name, describe(value)));
+        }
+        return makeExpression(std::move(literal), prefix.location);
     }
 
     // NAME(arguments): either all by name (IN1 := a, IN2 := b) or all in order (a, b).

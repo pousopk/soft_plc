@@ -281,3 +281,15 @@ TEST_CASE("Unsigned and byte-sized AT variables read and write the process image
     CHECK(r.integer("sc") == -128);
     CHECK(r.image().readDWord(Area::Marker, 4) == 0xDEADBEEF);
 }
+
+TEST_CASE("Typed literals have exactly their type") {
+    CHECK(runOnce("r := INT#-5;").integer("r") == -5);
+    Runner r("PROGRAM T VAR w : WORD := WORD#16#FF00; x : REAL := REAL#2; l : LINT := LINT#-5; "
+             "f : BOOL := BOOL#1; b : BYTE; END_VAR\nb := BYTE#2#1010_0101 AND BYTE#16#0F;\nEND_PROGRAM");
+    r.cycles(1);
+    CHECK(r.integer("w") == 0xFF00);
+    CHECK(r.real("x") == 2.0);
+    CHECK(r.integer("l") == -5);
+    CHECK(r.boolean("f"));
+    CHECK(r.integer("b") == 0x05);
+}
