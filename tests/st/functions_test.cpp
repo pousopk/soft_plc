@@ -152,7 +152,7 @@ TEST_CASE("Function rules are checked") {
          "a FUNCTION has no memory between calls, so it can't contain function block instances like 't'; use a "
          "FUNCTION_BLOCK"},
         {"TYPE P2 : STRUCT x : REAL; END_STRUCT; END_TYPE FUNCTION F : P2 END_FUNCTION PROGRAM P END_PROGRAM",
-         "a FUNCTION returns BOOL, INT, DINT, REAL or TIME; give back arrays and structs through a function block's "
+         "a FUNCTION returns an elementary type like INT or REAL; give back arrays and structs through a function block's "
          "outputs"},
         {"FUNCTION F : INT VAR x AT %MW0 : INT; END_VAR END_FUNCTION PROGRAM P END_PROGRAM",
          "AT can only be used in the PROGRAM, not inside function 'F'"},
@@ -192,13 +192,13 @@ TEST_CASE("Function rules are checked") {
         {vars + "r := SQRT(1.0, 2.0); END_PROGRAM", "SQRT needs 1 argument, not 2"},
         {vars + "i := MIN(1); END_PROGRAM", "MIN needs at least 2 arguments"},
         {vars + "i := MAX(i, t); END_PROGRAM",
-         "MAX needs inputs of one kind: all numbers, all TIMEs; got INT and TIME"},
+         "MAX needs inputs of one kind: all numbers, all TIMEs or all bit strings; got INT and TIME"},
         {vars + "f := MAX(f, f); END_PROGRAM",
-         "MAX needs inputs of one kind: all numbers, all TIMEs; got BOOL and BOOL"},
+         "MAX needs inputs of one kind: all numbers, all TIMEs or all bit strings; got BOOL and BOOL"},
         {vars + "i := LIMIT(0, i); END_PROGRAM", "LIMIT needs 3 arguments, not 2"},
         {vars + "i := SEL(i, 1, 2); END_PROGRAM", "SEL's selector G must be BOOL, not INT"},
         {vars + "i := SEL(f, 1, t); END_PROGRAM",
-         "SEL needs inputs of one kind: all numbers, all TIMEs or all BOOLs; got integer literal and TIME"},
+         "SEL needs inputs of one kind: all numbers, all TIMEs, all bit strings or all BOOLs; got integer literal and TIME"},
         {vars + "i := MUX(r, 1, 2); END_PROGRAM", "MUX's selector K must be an integer, not REAL"},
         {vars + "i := MUX(i, 1); END_PROGRAM", "MUX needs a selector K and at least 2 inputs"},
         {vars + "i := DINT_TO_INT(f); END_PROGRAM", "can't assign BOOL to 'DINT_TO_INT', which is DINT"},

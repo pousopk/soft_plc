@@ -169,7 +169,7 @@ TEST_CASE("Function block rules are checked") {
     };
     const Case cases[] = {
         {"PROGRAM P VAR c : Missing; END_VAR END_PROGRAM",
-         "unknown type 'Missing' (not BOOL, INT, DINT, REAL, TIME, a TYPE or a function block)"},
+         "unknown type 'Missing' (not an elementary type, a TYPE or a function block)"},
         {"PROGRAM P VAR x : INT; END_VAR x(); END_PROGRAM", "'x' is not a function block instance, so it can't be called"},
         {"PROGRAM P VAR x, y : INT; END_VAR y := x.Q; END_PROGRAM",
          "'x' is not a function block instance or a struct, so it has no members"},

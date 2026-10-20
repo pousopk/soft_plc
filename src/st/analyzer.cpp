@@ -24,21 +24,68 @@ struct AnalysisError {
 // ARRAY[1..100000000] by accident.
 constexpr std::size_t kMaxLeaves = 1'000'000;
 
-bool isInteger(DataType type) { return type == DataType::Int || type == DataType::DInt || type == DataType::AnyInt; }
+bool isInteger(DataType type) { return isIntegerType(type) || type == DataType::AnyInt; }
 bool isNumeric(DataType type) { return isInteger(type) || type == DataType::Real; }
 
-// The type two numbers are brought to before an operation: the "widest" one.
-// REAL beats DINT, DINT beats INT, and a literal adapts to the other side.
-DataType commonNumericType(DataType a, DataType b) {
-    if (a == DataType::Real || b == DataType::Real) return DataType::Real;
-    if (a == DataType::DInt || b == DataType::DInt) return DataType::DInt;
-    if (a == DataType::Int || b == DataType::Int) return DataType::Int;
-    return DataType::AnyInt;
+// BOOLs and bit strings, which AND, OR, XOR and NOT work on, plus integer
+// literals (16#FF00), which adapt to a bit string.
+bool isBitLike(DataType type) { return type == DataType::Bool || isBitString(type) || type == DataType::AnyInt; }
+
+// Can a value of type `from` be used as a `to` with nothing lost? Integers
+// widen when every value fits (UINT -> DINT, not INT -> UINT), bit strings
+// to longer ones, BOOL to any bit string. Any integer converts to REAL,
+// although DINT, UDINT and LINT can lose precision there: a deliberate
+// exception, kept from before these types existed.
+bool widensTo(DataType from, DataType to) {
+    if (from == to) {
+        return true;
+    }
+    if (to == DataType::Real) {
+        return isInteger(from);
+    }
+    if (isIntegerType(from) && isIntegerType(to)) {
+        const auto [fromLow, fromHigh] = integerRange(from);
+        const auto [toLow, toHigh] = integerRange(to);
+        return toLow <= fromLow && fromHigh <= toHigh;
+    }
+    return (from == DataType::Bool || isBitString(from)) && isBitString(to) && bitWidth(from) <= bitWidth(to);
+}
+
+// The type two operands are brought to before an operation: the smallest
+// one both widen to (INT and UINT give DINT), with a literal adapting to the
+// other side. Nothing if there's none, like for INT and WORD.
+std::optional<DataType> commonType(DataType a, DataType b) {
+    if (a == DataType::AnyInt || b == DataType::AnyInt) {
+        const auto other = a == DataType::AnyInt ? b : a;
+        if (other == DataType::AnyInt || isIntegerType(other) || isBitString(other) || other == DataType::Real) {
+            return other;
+        }
+        return std::nullopt;
+    }
+    for (const auto candidate : {DataType::SInt, DataType::USInt, DataType::Int, DataType::UInt, DataType::DInt,
+                                 DataType::UDInt, DataType::LInt, DataType::Real, DataType::Bool, DataType::Byte,
+                                 DataType::Word, DataType::DWord}) {
+        if (widensTo(a, candidate) && widensTo(b, candidate)) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
+// The address size a variable of an elementary type is placed at with AT.
+AccessSize accessSizeFor(DataType type) {
+    switch (bitWidth(type)) {
+    case 1: return AccessSize::Bit;
+    case 8: return AccessSize::Byte;
+    case 16: return AccessSize::Word;
+    default: return AccessSize::DWord;
+    }
 }
 
 // Rounds a bit count up to whole words (16 bits): in the S7 layout, words,
 // structs and arrays start at even bytes.
 std::size_t roundUpToWord(std::size_t bits) { return (bits + 15) / 16 * 16; }
+std::size_t roundUpToByte(std::size_t bits) { return (bits + 7) / 8 * 8; }
 
 // The value of an integer literal, also when written with a minus: 5 or -5.
 std::optional<std::int64_t> integerConstant(const Expression& expression) {
@@ -296,7 +343,7 @@ private:
                                     "aren't supported",
                                     name));
         }
-        fail(where, fmt::format("unknown type '{}' (not BOOL, INT, DINT, REAL, TIME, a TYPE or a function block)", name));
+        fail(where, fmt::format("unknown type '{}' (not an elementary type, a TYPE or a function block)", name));
     }
 
     // A type as written: a name, or ARRAY[...] OF a name. `aliasName` names
@@ -365,9 +412,12 @@ private:
             field.typeInfo = fieldType;
             field.type = fieldType->elementary;
 
-            // S7 layout: BOOLs take the next free bit; everything else starts at an even byte.
-            const bool isBool = fieldType->kind == Type::Kind::Elementary && fieldType->elementary == DataType::Bool;
-            if (!isBool) {
+            // S7 layout: BOOLs take the next free bit, 8-bit values the next
+            // byte, and everything else starts at an even byte.
+            const bool isElementary = fieldType->kind == Type::Kind::Elementary;
+            if (isElementary && fieldType->bitSize == 8) {
+                bit = roundUpToByte(bit);
+            } else if (!isElementary || fieldType->elementary != DataType::Bool) {
                 bit = roundUpToWord(bit);
             }
             type->fields.push_back(Type::Field{field.name, fieldType, type->leaves.size(), bit, nullptr});
@@ -444,7 +494,7 @@ private:
                                                     variable.name));
             }
             if (inFunction() && slot == pou.returnSlot && variable.typeInfo->isAggregate()) {
-                fail(variable.location, "a FUNCTION returns BOOL, INT, DINT, REAL or TIME; give back arrays and "
+                fail(variable.location, "a FUNCTION returns an elementary type like INT or REAL; give back arrays and "
                                         "structs through a function block's outputs");
             }
             if (variable.address) {
@@ -517,16 +567,16 @@ private:
             }
             return;
         }
-        const auto size = address.size;
-        const bool fits = (variable.type == DataType::Bool && size == AccessSize::Bit) ||
-                          (variable.type == DataType::Int && size == AccessSize::Word) ||
-                          ((variable.type == DataType::DInt || variable.type == DataType::Real ||
-                            variable.type == DataType::Time) &&
-                           size == AccessSize::DWord);
-        if (!fits) {
-            const char* needed = variable.type == DataType::Bool  ? "a bit address like %IX0.0"
-                                 : variable.type == DataType::Int ? "a word address like %MW0"
-                                                                  : "a double word address like %MD0";
+        if (variable.type == DataType::LInt) {
+            fail(variable.location,
+                 "LINT can't be placed with AT (there's no 8-byte address); put it in a struct in a data block");
+        }
+        const auto size = accessSizeFor(variable.type);
+        if (address.size != size) {
+            const char* needed = size == AccessSize::Bit    ? "a bit address like %IX0.0"
+                                 : size == AccessSize::Byte ? "a byte address like %MB0"
+                                 : size == AccessSize::Word ? "a word address like %MW0"
+                                                            : "a double word address like %MD0";
             fail(variable.location, fmt::format("{} '{}' needs {}, not {}", dataTypeName(variable.type), variable.name,
                                                 needed, address.toString()));
         }
@@ -636,16 +686,18 @@ private:
         if (source == targetType) {
             return;
         }
-        if (source == DataType::AnyInt && (targetType == DataType::Int || targetType == DataType::DInt)) {
+        if (source == DataType::AnyInt && (isIntegerType(targetType) || isBitString(targetType))) {
             checkLiteralFits(targetType, value);
             return;
         }
-        const bool widening = (targetType == DataType::DInt && source == DataType::Int) ||
-                              (targetType == DataType::Real && isNumeric(source));
-        if (!widening) {
-            const char* hint = isNumeric(source) && isNumeric(targetType) ? " (values might not fit)"
-                               : targetType == DataType::Time            ? " (write times like T#500ms)"
-                                                                         : "";
+        if (!widensTo(source, targetType)) {
+            const bool bitsAndNumbers = (isBitString(source) && isIntegerType(targetType)) ||
+                                        (isIntegerType(source) && isBitString(targetType));
+            const auto hint = isNumeric(source) && isNumeric(targetType) ? std::string(" (values might not fit)")
+                              : bitsAndNumbers ? fmt::format(" (convert with {}_TO_{})", dataTypeName(source),
+                                                             dataTypeName(targetType))
+                              : targetType == DataType::Time ? std::string(" (write times like T#500ms)")
+                                                             : std::string();
             fail(value.location, fmt::format("can't assign {} to '{}', which is {}{}", dataTypeName(source),
                                              targetName, dataTypeName(targetType), hint));
         }
@@ -656,8 +708,7 @@ private:
         if (!constant) {
             return; // a calculation of literals: it wraps around at run time if too big
         }
-        const auto [low, high] = target == DataType::Int ? std::pair<std::int64_t, std::int64_t>{-32768, 32767}
-                                                         : std::pair<std::int64_t, std::int64_t>{-2147483648, 2147483647};
+        const auto [low, high] = integerRange(target);
         if (*constant < low || *constant > high) {
             fail(value.location,
                  fmt::format("{} doesn't fit in {} ({} to {})", *constant, dataTypeName(target), low, high));
@@ -876,23 +927,29 @@ private:
     }
 
     // The type all of a standard function's inputs are brought to: the
-    // widest number, or TIME, or (where `allowBool`) BOOL; never a mix.
+    // widest number, or TIME, or the longest bit string, or (where
+    // `allowBool`) BOOL; never a mix.
     DataType commonInputType(const CallExpression& call, std::size_t first, bool allowBool) const {
         const auto& firstValue = *call.arguments[first].value;
         auto common = firstValue.type;
         for (std::size_t i = first; i < call.arguments.size(); ++i) {
             const auto& value = *call.arguments[i].value;
             const auto type = value.type;
-            const bool sameKind = (isNumeric(common) && isNumeric(type)) || (common == type && type == DataType::Time) ||
-                                  (allowBool && common == type && type == DataType::Bool);
-            if (!sameKind) {
-                fail(value.location, fmt::format("{} needs inputs of one kind: all numbers, all TIMEs{}; got {} and {}",
-                                                 toUpper(call.name), allowBool ? " or all BOOLs" : "",
+            std::optional<DataType> next;
+            if (isNumeric(common) && isNumeric(type)) {
+                next = commonType(common, type);
+            } else if (common == type && (type == DataType::Time || (allowBool && type == DataType::Bool))) {
+                next = type;
+            } else if (isBitLike(common) && isBitLike(type) && common != DataType::Bool && type != DataType::Bool) {
+                next = commonType(common, type);
+            }
+            if (!next) {
+                fail(value.location, fmt::format("{} needs inputs of one kind: {}; got {} and {}", toUpper(call.name),
+                                                 allowBool ? "all numbers, all TIMEs, all bit strings or all BOOLs"
+                                                           : "all numbers, all TIMEs or all bit strings",
                                                  typeText(firstValue), typeText(value)));
             }
-            if (isNumeric(type)) {
-                common = commonNumericType(common, type);
-            }
+            common = *next;
         }
         return common;
     }
@@ -1036,10 +1093,10 @@ private:
             }
             return operand;
         }
-        if (operand != DataType::Bool) {
-            fail(expression.location, fmt::format("NOT needs a BOOL, not {}", typeText(*unary.operand)));
+        if (operand != DataType::Bool && !isBitString(operand)) {
+            fail(expression.location, fmt::format("NOT needs a BOOL or a bit string, not {}", typeText(*unary.operand)));
         }
-        return DataType::Bool;
+        return operand;
     }
 
     DataType binaryType(BinaryExpression& binary, const Expression& expression) {
@@ -1055,18 +1112,22 @@ private:
             return timeOperation(binary, left, right, mismatch);
         }
 
+        // Bit strings (with BOOLs or literals) for AND, OR, XOR, =, <, ...
+        const bool bitStrings = isBitLike(left) && isBitLike(right) && (isBitString(left) || isBitString(right));
+        const auto common = commonType(left, right);
+
         switch (binary.op) {
         case BinaryOperator::Add:
         case BinaryOperator::Subtract:
         case BinaryOperator::Multiply:
         case BinaryOperator::Divide:
             if (!isNumeric(left) || !isNumeric(right)) mismatch("numbers");
-            binary.operandType = commonNumericType(left, right);
+            binary.operandType = *common;
             return binary.operandType;
 
         case BinaryOperator::Modulo:
             if (!isInteger(left) || !isInteger(right)) mismatch("integers");
-            binary.operandType = commonNumericType(left, right);
+            binary.operandType = *common;
             return binary.operandType;
 
         case BinaryOperator::Power:
@@ -1078,27 +1139,25 @@ private:
         case BinaryOperator::LessEqual:
         case BinaryOperator::Greater:
         case BinaryOperator::GreaterEqual:
-            if (!isNumeric(left) || !isNumeric(right)) mismatch("numbers");
-            binary.operandType = commonNumericType(left, right);
+            if (!(isNumeric(left) && isNumeric(right)) && !bitStrings) mismatch("two numbers or two bit strings");
+            binary.operandType = *common;
             return DataType::Bool;
 
         case BinaryOperator::Equal:
         case BinaryOperator::NotEqual:
-            if (left == DataType::Bool && right == DataType::Bool) {
-                binary.operandType = DataType::Bool;
-            } else if (isNumeric(left) && isNumeric(right)) {
-                binary.operandType = commonNumericType(left, right);
-            } else {
-                mismatch("two BOOLs or two numbers");
+            if (!(left == DataType::Bool && right == DataType::Bool) && !(isNumeric(left) && isNumeric(right)) &&
+                !bitStrings) {
+                mismatch("two BOOLs, two numbers or two bit strings");
             }
+            binary.operandType = *common;
             return DataType::Bool;
 
         case BinaryOperator::And:
         case BinaryOperator::Or:
         case BinaryOperator::Xor:
-            if (left != DataType::Bool || right != DataType::Bool) mismatch("BOOLs");
-            binary.operandType = DataType::Bool;
-            return DataType::Bool;
+            if (!(left == DataType::Bool && right == DataType::Bool) && !bitStrings) mismatch("BOOLs or bit strings");
+            binary.operandType = *common;
+            return binary.operandType;
         }
         return DataType::Unknown;
     }
@@ -1241,9 +1300,9 @@ private:
     void check(ForStatement& s, SourceLocation where) {
         s.slot = lookup(s.variable, where);
         const auto& variable = variableAt(s.slot);
-        if (variable.type != DataType::Int && variable.type != DataType::DInt) {
+        if (!isIntegerType(variable.type)) {
             const auto text = variable.typeInfo ? variable.typeInfo->name : variable.typeSpec.name;
-            fail(where, fmt::format("the FOR variable '{}' must be INT or DINT, not {}", s.variable, text));
+            fail(where, fmt::format("the FOR variable '{}' must be an integer, not {}", s.variable, text));
         }
         for (Expression* bound : {s.from.get(), s.to.get(), s.step.get()}) {
             if (bound != nullptr) {

@@ -148,7 +148,7 @@ TEST_CASE("Array and struct rules are checked") {
         {withTypes(vars + "i := a; END_PROGRAM"), "can't assign ARRAY[1..10] OF INT to 'i', which is INT"},
         {withTypes(vars + "p := l; END_PROGRAM"), "can't assign Line to 'p', which is Point"},
         {withTypes(vars + "p := 1.0; END_PROGRAM"), "can't assign REAL to 'p', which is Point"},
-        {withTypes(vars + "f := p = q; END_PROGRAM"), "'=' needs two BOOLs or two numbers, but got Point and Point"},
+        {withTypes(vars + "f := p = q; END_PROGRAM"), "'=' needs two BOOLs, two numbers or two bit strings, but got Point and Point"},
         {withTypes(vars + "i := a + 1; END_PROGRAM"),
          "'+' needs numbers, but got ARRAY[1..10] OF INT and integer literal"},
         {withTypes(vars + "IF p THEN END_IF; END_PROGRAM"), "the IF condition must be BOOL, not Point"},
@@ -438,4 +438,28 @@ TEST_CASE("Accesses with a fixed place get a direct leaf, the rest don't") {
     CHECK(std::get<Access>(first.value->node).directLeaf == 2); // a is leaf 0, b[1] leaf 1, b[2] leaf 2
     CHECK(std::get<Access>(std::get<Assignment>(body[1].node).value->node).directLeaf == kNoSlot); // run-time index
     CHECK(std::get<Access>(std::get<Assignment>(body[2].node).value->node).directLeaf == kNoSlot); // AT variable
+}
+
+TEST_CASE("8-bit struct fields start at the next byte, the rest at the next even byte") {
+    auto unit = compileProgram("TYPE S : STRUCT a : BOOL; b : BYTE; c : USINT; d : INT; e : LINT; END_STRUCT; END_TYPE\n"
+                               "PROGRAM P VAR s AT %DB1.DBB0 : S; END_VAR END_PROGRAM");
+    REQUIRE(unit.has_value());
+    const auto& fields = unit->program.variables[0].typeInfo->fields;
+    REQUIRE(fields.size() == 5);
+    CHECK(fields[0].bitOffset == 0);
+    CHECK(fields[1].bitOffset == 8);
+    CHECK(fields[2].bitOffset == 16);
+    CHECK(fields[3].bitOffset == 32);
+    CHECK(fields[4].bitOffset == 48);
+    CHECK(unit->program.variables[0].typeInfo->bitSize == 14 * 8);
+    CHECK(dataBlocksUsedBy(*unit).at(1) == 14);
+}
+
+TEST_CASE("The new types take AT addresses of their size") {
+    CHECK(errorOf("PROGRAM P VAR a AT %MW0 : UINT; b AT %MB2 : SINT; c AT %MD4 : DWORD; d AT %QB0 : BYTE; "
+                  "e AT %DB1.DBW0 : WORD; f AT %ID0 : UDINT; END_VAR END_PROGRAM") == "");
+    CHECK(errorOf("PROGRAM P VAR a AT %MD0 : LINT; END_VAR END_PROGRAM") ==
+          "LINT can't be placed with AT (there's no 8-byte address); put it in a struct in a data block");
+    CHECK(errorOf("PROGRAM P VAR a AT %MW0 : BYTE; END_VAR END_PROGRAM") ==
+          "BYTE 'a' needs a byte address like %MB0, not %MW0");
 }
