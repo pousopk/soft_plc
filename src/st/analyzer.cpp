@@ -1181,6 +1181,15 @@ private:
         // Bit strings (with BOOLs or literals) for AND, OR, XOR, =, <, ...
         const bool bitStrings = isBitLike(left) && isBitLike(right) && (isBitString(left) || isBitString(right));
         const auto common = commonType(left, right);
+        // A literal meeting a bit string must fit it, or the result would
+        // be wider than the bit string (w OR 16#10000, w XOR -1).
+        if (common && isBitString(*common)) {
+            for (const Expression* side : {binary.left.get(), binary.right.get()}) {
+                if (side->type == DataType::AnyInt) {
+                    checkLiteralFits(*common, *side);
+                }
+            }
+        }
 
         switch (binary.op) {
         case BinaryOperator::Add:
@@ -1296,7 +1305,9 @@ private:
                                     formatAccess(target), target.name));
         }
         const auto& type = resolveAccess(target, where);
-        if (target.isPlainVariable() &&
+        // Also one of its bits (i.%X4): FOR variables are plain variables, so
+        // an access with a part and nothing else on the same slot is one.
+        if ((target.isPlainVariable() || (target.instanceSlot == kNoSlot && target.selectors.size() == 1 && target.part)) &&
             std::find(loopVariables_.begin(), loopVariables_.end(), target.slot) != loopVariables_.end()) {
             fail(where, fmt::format("'{}' is the variable of a FOR loop and can't be changed inside it", target.name));
         }

@@ -204,3 +204,18 @@ TEST_CASE("Part access needs a bit string or an integer, and a part inside it") 
     CHECK(p("b := b.%B0;") == "'b.%B0' is out of range: a BYTE has no bytes inside it");
     CHECK(p("f := a[1].%X15; a[2].%B0 := b;").empty());
 }
+
+TEST_CASE("A FOR variable can't be changed through one of its bits either") {
+    CHECK(errorOf(program("FOR i := 0 TO 10 DO i.%X4 := TRUE; END_FOR;")) ==
+          "'i' is the variable of a FOR loop and can't be changed inside it");
+}
+
+TEST_CASE("A literal in a bit-string operation must fit the bit string") {
+    const auto p = [](const char* body) {
+        return errorOf(std::string("PROGRAM T VAR w : WORD; d : DWORD; f : BOOL; END_VAR\n") + body + "\nEND_PROGRAM");
+    };
+    CHECK(p("d := w OR 16#10000;") == "65536 doesn't fit in WORD (0 to 65535)");
+    CHECK(p("w := w XOR -1;") == "-1 doesn't fit in WORD (0 to 65535)");
+    CHECK(p("f := w = 16#10000;") == "65536 doesn't fit in WORD (0 to 65535)");
+    CHECK(p("w := w AND 16#FF00; f := w > 16#00FF;").empty());
+}

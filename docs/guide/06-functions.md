@@ -109,7 +109,7 @@ END_PROGRAM
 
 | Function | What it does |
 |---|---|
-Every `<FROM>_TO_<TO>` between the integers, the bit strings, BOOL and REAL exists; TIME only converts to and from DINT.
+Every `<FROM>_TO_<TO>` between the integers, the bit strings and BOOL exists, and between the integers and REAL. Between REAL and the bit strings there are only `DWORD_TO_REAL` and `REAL_TO_DWORD` (see below), and BOOL doesn't convert to or from REAL: go through an integer, as in `UINT_TO_REAL(WORD_TO_UINT(w))`. TIME only converts to and from DINT.
 
 | Function | What it does |
 |---|---|
