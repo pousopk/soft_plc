@@ -91,7 +91,7 @@ They're built in, and most of them work with several types, like in TIA Portal. 
 | `SEL(G, IN0, IN1)` | `IN0` if `G` is FALSE, `IN1` if TRUE | `G` is a BOOL |
 | `MUX(K, IN0, IN1, …)` | input number `K`, counting from 0 | `K` outside the inputs **stops the PLC** |
 
-The inputs (except `G` and `K`) must be of one kind: all numbers, all TIMEs, or (for `SEL` and `MUX`) all BOOLs. Numbers of different types are widened like in any expression: `MAX(anInt, aReal)` is a REAL.
+The inputs (except `G` and `K`) must be of one kind: all numbers, all TIMEs, all bit strings, or (for `SEL` and `MUX`) all BOOLs. Numbers of different types are widened like in any expression: `MAX(anInt, aReal)` is a REAL.
 
 With names, the inputs are called `IN1`, `IN2`, … for `MIN` and `MAX`; `MN`, `IN`, `MX` for `LIMIT`; `G`, `IN0`, `IN1` for `SEL`; `K`, `IN0`, `IN1`, … for `MUX`; and `IN` for the functions with one input.
 
@@ -109,12 +109,21 @@ END_PROGRAM
 
 | Function | What it does |
 |---|---|
-| `INT_TO_DINT`, `INT_TO_REAL`, `DINT_TO_REAL` | widen; never loses anything (except that a REAL keeps only about 7 digits) |
-| `DINT_TO_INT` | keeps the **low 16 bits**, like a PLC: `DINT_TO_INT(70000)` is 4464. Check the range first if that matters |
-| `REAL_TO_INT`, `REAL_TO_DINT` | round to the nearest (halves to even), and **limit** to the type's range: `REAL_TO_INT(1.0E9)` is 32767 |
-| `BOOL_TO_INT`, `BOOL_TO_DINT` | FALSE → 0, TRUE → 1 |
-| `INT_TO_BOOL`, `DINT_TO_BOOL` | 0 → FALSE, anything else → TRUE |
+Every `<FROM>_TO_<TO>` between the integers, the bit strings, BOOL and REAL exists; TIME only converts to and from DINT.
+
+| Function | What it does |
+|---|---|
+| `INT_TO_DINT`, `USINT_TO_UINT`, `INT_TO_REAL`, … | widen; never loses anything (except that a REAL keeps only about 7 digits) |
+| `DINT_TO_INT`, `INT_TO_USINT`, … | keep the **low bits**, like a PLC: `DINT_TO_INT(70000)` is 4464, `INT_TO_USINT(-1)` is 255. Check the range first if that matters |
+| `WORD_TO_INT`, `INT_TO_WORD`, `BYTE_TO_USINT`, … | keep the bits as they are: `WORD_TO_INT(16#FFFF)` is −1, `INT_TO_WORD(-1)` is `16#FFFF` |
+| `BYTE_TO_WORD`, `DWORD_TO_WORD`, … | widen with zeros, or keep the low bits |
+| `REAL_TO_INT`, `REAL_TO_UDINT`, … | round to the nearest (halves to even), and **limit** to the type's range: `REAL_TO_INT(1.0E9)` is 32767, `REAL_TO_USINT(-5.0)` is 0 |
+| `DWORD_TO_REAL`, `REAL_TO_DWORD` | **copy the 32 bits unchanged**, not the number: see below |
+| `BOOL_TO_INT`, `BOOL_TO_WORD`, … | FALSE → 0, TRUE → 1 |
+| `INT_TO_BOOL`, `WORD_TO_BOOL`, … | 0 → FALSE, anything else → TRUE |
 | `TIME_TO_DINT`, `DINT_TO_TIME` | a TIME as milliseconds, and back |
+
+`DWORD_TO_REAL` is different from every other conversion: it doesn't turn the number 1 into 1.0, it takes the 32 bits as they are and reads them as a REAL, as in TIA Portal. That's what you need when a REAL arrives as two words, for example over Modbus: `DWORD_TO_REAL(16#3F80_0000)` is 1.0. To turn a number into a REAL, use `UDINT_TO_REAL`, `DINT_TO_REAL` and so on.
 
 ```st
 PROGRAM Conversions
@@ -125,3 +134,26 @@ END_PROGRAM
 ```
 
 The rounding of `ROUND` and `REAL_TO_INT` (halves to the even number) is IEEE 754's default rounding. Check your CPU's documentation before relying on how a real PLC rounds exact halves.
+
+### Bits
+
+| Function | Gives | |
+|---|---|---|
+| `SHL(IN, N)` | `IN` shifted `N` bits to the left; zeros come in on the right | `SHL(BYTE#16#81, 1)` is `16#02` |
+| `SHR(IN, N)` | `IN` shifted `N` bits to the right; zeros come in on the left | `SHR(WORD#16#8000, 15)` is `16#0001` |
+| `ROL(IN, N)` | `IN` rotated `N` bits to the left: what leaves on one side comes back on the other | `ROL(BYTE#16#81, 1)` is `16#03` |
+| `ROR(IN, N)` | `IN` rotated `N` bits to the right | `ROR(BYTE#16#01, 1)` is `16#80` |
+
+`IN` must be a bit string (BYTE, WORD or DWORD), and the result has its type; `N` is any integer. Shifting by the width or more gives 0, rotating goes round (`ROR` of a BYTE by 9 is the same as by 1), and a negative `N` changes nothing. With names, the inputs are `IN` and `N`. An untyped literal isn't a bit string, so write `SHL(BYTE#16#81, 1)`, not `SHL(16#81, 1)`.
+
+```st
+PROGRAM Shifting
+VAR
+    received : ARRAY[1..2] OF WORD := [16#3F80, 16#0000];  (* a REAL, as two Modbus registers *)
+    value : REAL;
+    lamps : BYTE := 16#01;
+END_VAR
+    value := DWORD_TO_REAL(SHL(WORD_TO_DWORD(received[1]), 16) OR received[2]);  (* 1.0 *)
+    lamps := ROL(lamps, 1);   (* a running light: one lamp further each cycle *)
+END_PROGRAM
+```
