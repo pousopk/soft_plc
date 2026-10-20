@@ -205,6 +205,13 @@ private:
     std::string& out_;
 };
 
+// Every elementary type, in the order lists of them are shown.
+constexpr DataType kElementaryTypes[] = {
+    DataType::Bool, DataType::SInt,  DataType::USInt, DataType::Int,  DataType::UInt, DataType::DInt,
+    DataType::UDInt, DataType::LInt, DataType::Byte,  DataType::Word, DataType::DWord, DataType::Real,
+    DataType::Time,
+};
+
 } // namespace
 
 const char* dataTypeName(DataType type) {
@@ -213,6 +220,14 @@ const char* dataTypeName(DataType type) {
     case DataType::Bool: return "BOOL";
     case DataType::Int: return "INT";
     case DataType::DInt: return "DINT";
+    case DataType::SInt: return "SINT";
+    case DataType::USInt: return "USINT";
+    case DataType::UInt: return "UINT";
+    case DataType::UDInt: return "UDINT";
+    case DataType::LInt: return "LINT";
+    case DataType::Byte: return "BYTE";
+    case DataType::Word: return "WORD";
+    case DataType::DWord: return "DWORD";
     case DataType::Real: return "REAL";
     case DataType::Time: return "TIME";
     case DataType::AnyInt: return "integer literal";
@@ -225,12 +240,63 @@ const char* dataTypeName(DataType type) {
 
 std::optional<DataType> elementaryTypeFromName(std::string_view name) {
     const auto upper = toUpper(name);
-    if (upper == "BOOL") return DataType::Bool;
-    if (upper == "INT") return DataType::Int;
-    if (upper == "DINT") return DataType::DInt;
-    if (upper == "REAL") return DataType::Real;
-    if (upper == "TIME") return DataType::Time;
+    for (const auto type : kElementaryTypes) {
+        if (upper == dataTypeName(type)) {
+            return type;
+        }
+    }
     return std::nullopt;
+}
+
+bool isIntegerType(DataType type) {
+    switch (type) {
+    case DataType::SInt:
+    case DataType::USInt:
+    case DataType::Int:
+    case DataType::UInt:
+    case DataType::DInt:
+    case DataType::UDInt:
+    case DataType::LInt: return true;
+    default: return false;
+    }
+}
+
+bool isUnsignedType(DataType type) {
+    return type == DataType::USInt || type == DataType::UInt || type == DataType::UDInt;
+}
+
+bool isBitString(DataType type) {
+    return type == DataType::Byte || type == DataType::Word || type == DataType::DWord;
+}
+
+unsigned bitWidth(DataType type) {
+    switch (type) {
+    case DataType::Bool: return 1;
+    case DataType::SInt:
+    case DataType::USInt:
+    case DataType::Byte: return 8;
+    case DataType::Int:
+    case DataType::UInt:
+    case DataType::Word: return 16;
+    case DataType::DInt:
+    case DataType::UDInt:
+    case DataType::DWord:
+    case DataType::Real:
+    case DataType::Time: return 32;
+    case DataType::LInt: return 64;
+    default: return 0;
+    }
+}
+
+std::pair<std::int64_t, std::int64_t> integerRange(DataType type) {
+    if (type == DataType::LInt || type == DataType::AnyInt) {
+        return {std::numeric_limits<std::int64_t>::min(), std::numeric_limits<std::int64_t>::max()};
+    }
+    const unsigned bits = bitWidth(type);
+    if (isUnsignedType(type) || isBitString(type)) {
+        return {0, (std::int64_t{1} << bits) - 1};
+    }
+    return {-(std::int64_t{1} << (bits - 1)), (std::int64_t{1} << (bits - 1)) - 1};
 }
 
 std::string formatTypeSpec(const TypeSpec& spec) {
@@ -261,12 +327,12 @@ const Type* elementaryType(DataType type) {
     // One shared Type per elementary type, built on first use.
     static const auto types = [] {
         std::vector<Type> list;
-        for (const auto t : {DataType::Bool, DataType::Int, DataType::DInt, DataType::Real, DataType::Time}) {
+        for (const auto t : kElementaryTypes) {
             Type entry;
             entry.kind = Type::Kind::Elementary;
             entry.name = dataTypeName(t);
             entry.elementary = t;
-            entry.bitSize = t == DataType::Bool ? 1 : t == DataType::Int ? 16 : 32;
+            entry.bitSize = bitWidth(t);
             entry.leaves.push_back(Type::Leaf{t, 0, ""});
             list.push_back(std::move(entry));
         }

@@ -8,7 +8,13 @@
 // exactly the same results.
 namespace softplc::st::runtime {
 
-inline std::int64_t toInteger(const Value& value) { return std::get<std::int64_t>(value); }
+// A BOOL counts as 0 or 1, for when it's widened to a bit string (flag OR myWord).
+inline std::int64_t toInteger(const Value& value) {
+    if (const auto* b = std::get_if<bool>(&value)) {
+        return *b ? 1 : 0;
+    }
+    return std::get<std::int64_t>(value);
+}
 
 inline double toReal(const Value& value) {
     if (const auto* i = std::get_if<std::int64_t>(&value)) {
@@ -26,10 +32,17 @@ inline double roundToReal(double value) { return static_cast<double>(static_cast
 // signed type is guaranteed to wrap this way.
 inline std::int64_t wrapInteger(std::int64_t value, DataType type) {
     switch (type) {
+    case DataType::SInt: return static_cast<std::int8_t>(value);
+    case DataType::USInt:
+    case DataType::Byte: return static_cast<std::uint8_t>(value);
     case DataType::Int: return static_cast<std::int16_t>(value);
+    case DataType::UInt:
+    case DataType::Word: return static_cast<std::uint16_t>(value);
     case DataType::DInt:
     case DataType::Time: return static_cast<std::int32_t>(value);
-    default: return value; // AnyInt: a plain 64-bit calculation of literals
+    case DataType::UDInt:
+    case DataType::DWord: return static_cast<std::uint32_t>(value);
+    default: return value; // LINT, and AnyInt: a plain 64-bit calculation of literals
     }
 }
 

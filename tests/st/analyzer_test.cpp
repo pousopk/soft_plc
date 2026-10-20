@@ -108,8 +108,8 @@ TEST_CASE("EXIT only inside loops") {
 }
 
 TEST_CASE("Unknown type names") {
-    CHECK(errorOf("PROGRAM P VAR x : WORD; END_VAR END_PROGRAM") ==
-          "unknown type 'WORD' (not BOOL, INT, DINT, REAL, TIME, a TYPE or a function block)");
+    CHECK(errorOf("PROGRAM P VAR x : LWORD; END_VAR END_PROGRAM") ==
+          "unknown type 'LWORD' (not BOOL, INT, DINT, REAL, TIME, a TYPE or a function block)");
 }
 
 TEST_CASE("Undeclared and duplicate variables") {

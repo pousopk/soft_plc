@@ -6,6 +6,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -35,9 +36,17 @@ enum class DataType {
     Bool,          // TRUE / FALSE
     Int,           // 16-bit signed: -32768 .. 32767
     DInt,          // 32-bit signed
+    SInt,          // 8-bit signed: -128 .. 127
+    USInt,         // 8-bit unsigned: 0 .. 255
+    UInt,          // 16-bit unsigned: 0 .. 65535
+    UDInt,         // 32-bit unsigned
+    LInt,          // 64-bit signed
+    Byte,          // 8 bits: a bit string, not a number
+    Word,          // 16 bits
+    DWord,         // 32 bits
     Real,          // 32-bit floating point
     Time,          // a duration, in milliseconds (32-bit, like Siemens)
-    AnyInt,        // an integer literal like 42, which adapts to INT, DINT or REAL
+    AnyInt,        // an integer literal like 42, which adapts to any integer type, bit string or REAL
     FunctionBlock, // an instance of a function block, like `t1 : TON`
     Array,         // ARRAY[1..10] OF INT
     Struct,        // a STRUCT declared in a TYPE block
@@ -45,8 +54,20 @@ enum class DataType {
 
 const char* dataTypeName(DataType type); // "BOOL", "INT", ...
 
-// BOOL, INT, DINT, REAL or TIME for those names (any case), nothing otherwise.
+// The elementary type with that name (any case), nothing otherwise.
 std::optional<DataType> elementaryTypeFromName(std::string_view name);
+
+// Families of types, as IEC groups them.
+bool isIntegerType(DataType type);  // SINT .. LINT, signed or not (not integer literals)
+bool isUnsignedType(DataType type); // USINT, UINT, UDINT
+bool isBitString(DataType type);    // BYTE, WORD, DWORD (BOOL is a bit string too, but treated apart)
+
+// Size in bits: 1 for BOOL, 8 for BYTE, ..., 64 for LINT; 0 for non-elementary types.
+unsigned bitWidth(DataType type);
+
+// The smallest and largest value of an integer type, bit string (as an
+// unsigned number) or TIME (in milliseconds).
+std::pair<std::int64_t, std::int64_t> integerRange(DataType type);
 
 // A runtime value. Every integer type (and TIME) is held in an int64 and
 // every REAL in a double; the interpreter keeps them inside their type's range.
