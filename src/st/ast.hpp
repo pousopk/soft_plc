@@ -189,7 +189,22 @@ struct IndexSelector {
     SourceLocation location;
 };
 
-using Selector = std::variant<FieldSelector, IndexSelector>;
+// `.%X3`, `.%B1` or `.%W0` after a variable: one of its bits, bytes or
+// words, counted from the least significant (as in TIA Portal).
+struct PartSelector {
+    AccessSize size = AccessSize::Bit; // Bit, Byte or Word
+    unsigned index = 0;
+    SourceLocation location;
+};
+
+using Selector = std::variant<FieldSelector, IndexSelector, PartSelector>;
+
+// The bits of a leaf that a part access reads and writes (set by the analyzer).
+struct BitPart {
+    unsigned shift = 0;                 // from the least significant bit
+    unsigned width = 0;                 // 1, 8 or 16
+    DataType whole = DataType::Unknown; // the type of the leaf it's part of
+};
 
 // One array index that's only known at run time (set by the analyzer).
 struct IndexTerm {
@@ -218,6 +233,9 @@ struct Access {
     // The leaf to use directly, when it's fixed: no run-time index and not
     // an AT variable (the common case, which both engines make fast).
     std::size_t directLeaf = kNoSlot;
+    // For `.%X3` and the like: which bits of the leaf. `type` is then the
+    // part's type (BOOL, BYTE or WORD), and there is no direct leaf.
+    std::optional<BitPart> part;
 
     bool isPlainVariable() const { return instanceSlot == kNoSlot && selectors.empty(); }
 };
@@ -463,6 +481,7 @@ Access cloneAccess(const Access& access);
 
 // a, t1.Q, values[(i + 1)].x
 std::string formatAccess(const Access& access);
+std::string partText(const PartSelector& part); // ".%X3"
 
 // One line with every operation in parentheses, showing exactly how the
 // parser grouped things: a + b * c  ->  (a + (b * c))

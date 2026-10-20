@@ -250,6 +250,11 @@ std::optional<DataType> elementaryTypeFromName(std::string_view name) {
 
 std::span<const DataType> elementaryTypes() { return kElementaryTypes; }
 
+std::string partText(const PartSelector& part) {
+    const char letter = part.size == AccessSize::Bit ? 'X' : part.size == AccessSize::Byte ? 'B' : 'W';
+    return fmt::format(".%{}{}", letter, part.index);
+}
+
 bool isIntegerType(DataType type) {
     switch (type) {
     case DataType::SInt:
@@ -429,6 +434,7 @@ Access cloneAccess(const Access& access) {
     for (const auto& selector : access.selectors) {
         std::visit(Overloaded{
                        [&](const FieldSelector& field) { copy.selectors.emplace_back(field); },
+                       [&](const PartSelector& part) { copy.selectors.emplace_back(part); },
                        [&](const IndexSelector& index) {
                            IndexSelector indexCopy;
                            indexCopy.location = index.location;
@@ -448,6 +454,7 @@ std::string formatAccess(const Access& access) {
     for (const auto& selector : access.selectors) {
         std::visit(Overloaded{
                        [&](const FieldSelector& field) { text += "." + field.name; },
+                       [&](const PartSelector& part) { text += partText(part); },
                        [&](const IndexSelector& index) {
                            text += '[';
                            for (std::size_t i = 0; i < index.indices.size(); ++i) {

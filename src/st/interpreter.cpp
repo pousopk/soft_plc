@@ -547,6 +547,13 @@ Interpreter::Flow Interpreter::execute(const Statement& statement, Instance& sel
                     copyAggregate(from, place(s.target, self), *s.target.type);
                 } else if (s.target.directLeaf != kNoSlot) {
                     self.values[s.target.directLeaf] = convert(evaluate(*s.value, self), s.target.type->elementary);
+                } else if (s.target.part) {
+                    // A bit, byte or word: read the whole value, change the part, write it back.
+                    const auto value = evaluate(*s.value, self);
+                    const auto where = place(s.target, self);
+                    const auto& part = *s.target.part;
+                    const auto whole = toInteger(loadLeaf(where, part.whole, image_));
+                    storeLeaf(where, part.whole, insertPart(whole, part, convert(value, s.target.type->elementary)));
                 } else {
                     const auto value = evaluate(*s.value, self);
                     storeLeaf(place(s.target, self), s.target.type->elementary, value);
@@ -750,6 +757,22 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
             *sp++ = toSlot(loadLeaf(vmPlace(info, self, offset), info.type->elementary, image_));
             break;
         }
+        case Op::LoadPart: {
+            const auto& part = chunk.parts[in.b];
+            const auto offset = (--sp)->i;
+            const auto whole = loadLeaf(vmPlace(chunk.places[in.a], self, offset), part.whole, image_);
+            *sp++ = toSlot(extractPart(toInteger(whole), part));
+            break;
+        }
+        case Op::StorePart: {
+            const auto& part = chunk.parts[in.b];
+            const auto offset = (--sp)->i;
+            const auto& info = chunk.places[in.a];
+            const auto target = vmPlace(info, self, offset);
+            const auto whole = toInteger(loadLeaf(target, part.whole, image_));
+            storeLeaf(target, part.whole, insertPart(whole, part, fromSlot(*--sp, info.type->elementary)));
+            break;
+        }
         case Op::StorePlace: {
             const auto& info = chunk.places[in.a];
             const auto offset = (--sp)->i;
@@ -896,6 +919,10 @@ Value Interpreter::evaluate(const Expression& expression, Instance& self) {
                                   const Instance& owner =
                                       access.instanceSlot == kNoSlot ? self : *self.children[access.instanceSlot];
                                   return owner.values[access.directLeaf];
+                              }
+                              if (access.part) {
+                                  const auto whole = loadLeaf(place(access, self), access.part->whole, image_);
+                                  return extractPart(toInteger(whole), *access.part);
                               }
                               return loadLeaf(place(access, self), access.type->elementary, image_);
                           },

@@ -293,3 +293,24 @@ TEST_CASE("Typed literals have exactly their type") {
     CHECK(r.boolean("f"));
     CHECK(r.integer("b") == 0x05);
 }
+
+TEST_CASE("Bits, bytes and words of a variable can be read and written") {
+    Runner r("PROGRAM T VAR w : WORD := 16#1234; d : DWORD; i : INT; f, g : BOOL; b : BYTE; l : LINT; END_VAR\n"
+             "f := w.%X2; g := w.%X3; b := w.%B1; w.%X0 := TRUE; d.%W1 := w; i.%X15 := TRUE; l.%B7 := 16#80;\n"
+             "END_PROGRAM");
+    r.cycles(1);
+    CHECK(r.boolean("f")); // 16#1234 = ...0100: bit 2 set
+    CHECK_FALSE(r.boolean("g"));
+    CHECK(r.integer("b") == 0x12);
+    CHECK(r.integer("w") == 0x1235);
+    CHECK(r.integer("d") == 0x12350000);
+    CHECK(r.integer("i") == -32768);
+    CHECK(r.integer("l") == std::numeric_limits<std::int64_t>::min());
+}
+
+TEST_CASE("Bit 0 of an AT word is the least significant bit, in the second byte") {
+    Runner r("PROGRAM T VAR w AT %MW10 : WORD; END_VAR\nw.%X0 := TRUE;\nEND_PROGRAM");
+    r.cycles(1);
+    CHECK(r.image().readByte(Area::Marker, 11) == 0x01);
+    CHECK(r.image().readByte(Area::Marker, 10) == 0x00);
+}

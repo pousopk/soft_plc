@@ -48,6 +48,8 @@ enum class Op : std::uint8_t {
     LoadPlace,  // pop the offset, push the value
     StorePlace, // pop the offset, pop the value, store it
     CopyPlace,  // pop the target's offset, then the source's; copy a whole array or struct (a = source, b = target)
+    LoadPart,   // like LoadPlace, then take the part b (an entry in Chunk::parts), as in myWord.%X3
+    StorePart,  // like StorePlace, but only into the part b: read the whole value, change the part, write it back
 
     // Function calls (a = entry in Chunk::calls): pop the arguments, push the result
     CallBuiltin,  // a standard function like MAX or REAL_TO_INT
@@ -119,6 +121,7 @@ struct Chunk {
     std::vector<PlaceInfo> places;
     std::vector<IndexInfo> indices;
     std::vector<CallInfo> calls;
+    std::vector<BitPart> parts;            // for LoadPart and StorePart
     std::size_t temps = 0;                 // scratch slots needed
     std::size_t maxStack = 0;              // deepest the operand stack ever gets
 };

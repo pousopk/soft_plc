@@ -14,6 +14,7 @@ enum class TokenKind {
     Time,          // T#500ms, TIME#1m30s (value: milliseconds)
     TypePrefix,    // INT# in INT#5 or WORD# in WORD#16#FF (text: the type name)
     DirectAddress, // %IX0.0, %MW10
+    PartSelector,  // %X3, %B1 or %W0 after a dot, as in myWord.%X3 (value: an Address with size and index)
     True,          // TRUE
     False,         // FALSE
 

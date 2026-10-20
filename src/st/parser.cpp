@@ -381,7 +381,13 @@ private:
         Access result;
         result.name = expect(TokenKind::Identifier, "a variable name").text;
         for (;;) {
-            if (check(TokenKind::Dot)) {
+            if (check(TokenKind::Dot) && peekNext().kind == TokenKind::PartSelector) {
+                advance(); // '.'
+                const Token& part = advance();
+                const auto address = std::get<Address>(part.value);
+                result.selectors.emplace_back(
+                    PartSelector{address.size, static_cast<unsigned>(address.byteOffset), part.location});
+            } else if (check(TokenKind::Dot)) {
                 advance();
                 const Token& field = expect(TokenKind::Identifier, fmt::format("a name after '{}.'", formatAccess(result)));
                 result.selectors.emplace_back(FieldSelector{field.text, field.location});

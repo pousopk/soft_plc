@@ -15,6 +15,7 @@ const char* tokenKindName(TokenKind kind) {
     case TokenKind::Real: return "real number";
     case TokenKind::Time: return "TIME literal";
     case TokenKind::TypePrefix: return "typed literal";
+    case TokenKind::PartSelector: return "part like %X3";
     case TokenKind::DirectAddress: return "address";
     case TokenKind::True: return "'TRUE'";
     case TokenKind::False: return "'FALSE'";
@@ -142,6 +143,7 @@ public:
                 return tokens;
             }
             tokens.push_back(nextToken());
+            previous_ = tokens.back().kind;
         }
     }
 
@@ -203,7 +205,7 @@ private:
             return identifierOrKeyword();
         }
         if (c == '%') {
-            return directAddress();
+            return previous_ == TokenKind::Dot ? partSelector() : directAddress();
         }
         return symbol();
     }
@@ -272,6 +274,31 @@ private:
             fail(start, fmt::format("invalid TIME literal '{}' (examples: T#500ms, T#1m30s)", text));
         }
         return Token{TokenKind::Time, std::move(text), start, total};
+    }
+
+    // %X3, %B1 or %W0 after a dot: a bit, byte or word of a variable, as
+    // in TIA Portal (myWord.%X3). The analyzer checks it fits the variable.
+    Token partSelector() {
+        const auto start = location_;
+        const auto begin = pos_;
+        advance(); // '%'
+        while (isIdentifierChar(peek())) {
+            advance();
+        }
+        std::string text(source_.substr(begin, pos_ - begin));
+        const auto letter = static_cast<char>(std::toupper(static_cast<unsigned char>(text.size() > 1 ? text[1] : ' ')));
+        const auto digits = std::string_view(text).substr(std::min<std::size_t>(2, text.size()));
+        unsigned index = 0;
+        const auto [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), index);
+        if ((letter != 'X' && letter != 'B' && letter != 'W') || digits.empty() || ec != std::errc{} ||
+            ptr != digits.data() + digits.size()) {
+            fail(start, fmt::format("invalid part '{}' (examples: .%X3 for a bit, .%B1 for a byte, .%W0 for a word)",
+                                    text));
+        }
+        Address part;
+        part.size = letter == 'X' ? AccessSize::Bit : letter == 'B' ? AccessSize::Byte : AccessSize::Word;
+        part.byteOffset = index;
+        return Token{TokenKind::PartSelector, std::move(text), start, part};
     }
 
     // %IX0.0, %QB1, %MW10 ... validated with the same parser as the rest of the PLC.
@@ -447,6 +474,7 @@ private:
 
     std::string_view source_;
     std::size_t pos_ = 0;
+    TokenKind previous_ = TokenKind::EndOfFile; // the last token read
     SourceLocation location_;
 };
 

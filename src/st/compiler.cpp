@@ -29,7 +29,7 @@ int stackEffect(Op op) {
     case Op::AndBits: case Op::OrBits: case Op::XorBits:
     case Op::JumpIfFalse: case Op::JumpIfTrue:
         return -1;
-    case Op::StorePlace: case Op::CopyPlace:
+    case Op::StorePlace: case Op::StorePart: case Op::CopyPlace:
         return -2;
     default:
         return 0; // NegI, NegR, Wrap*, IntToReal, Not, NotBits, Jump, LoopTick, ForTest, CheckStep, Call, Return,
@@ -140,7 +140,14 @@ private:
 
     // Accesses with a fixed offset into memory that isn't in the process
     // image get the fast instructions; the rest use a place.
-    bool isDirect(const Access& access) const { return access.dynamic.empty() && !variableOf(access).address; }
+    bool isDirect(const Access& access) const {
+        return access.dynamic.empty() && !variableOf(access).address && !access.part;
+    }
+
+    std::uint32_t addPart(const BitPart& part) {
+        chunk_.parts.push_back(part);
+        return static_cast<std::uint32_t>(chunk_.parts.size() - 1);
+    }
 
     std::uint32_t addPlace(const Access& access) {
         chunk_.places.push_back(PlaceInfo{access.instanceSlot, access.slot, access.leafOffset, access.bitOffset, access.type});
@@ -171,7 +178,11 @@ private:
         const auto type = access.type->elementary;
         if (!isDirect(access)) {
             pushOffset(access, where);
-            emit(Op::LoadPlace, where, addPlace(access));
+            if (access.part) {
+                emit(Op::LoadPart, where, addPlace(access), addPart(*access.part));
+            } else {
+                emit(Op::LoadPlace, where, addPlace(access));
+            }
             return;
         }
         const auto leaf = slotIndex(variable.leaf + access.leafOffset);
@@ -287,7 +298,11 @@ private:
         const auto& variable = variableOf(access);
         if (!isDirect(access)) {
             pushOffset(access, where);
-            emit(Op::StorePlace, where, addPlace(access));
+            if (access.part) {
+                emit(Op::StorePart, where, addPlace(access), addPart(*access.part));
+            } else {
+                emit(Op::StorePlace, where, addPlace(access));
+            }
             return;
         }
         const auto leaf = slotIndex(variable.leaf + access.leafOffset);
@@ -521,6 +536,8 @@ const char* opName(Op op) {
     case Op::OrBits: return "OrBits";
     case Op::XorBits: return "XorBits";
     case Op::NotBits: return "NotBits";
+    case Op::LoadPart: return "LoadPart";
+    case Op::StorePart: return "StorePart";
     case Op::LoadMemberBool: return "LoadMemberBool";
     case Op::LoadMemberInt: return "LoadMemberInt";
     case Op::LoadMemberReal: return "LoadMemberReal";
@@ -592,7 +609,7 @@ std::string disassemble(const Chunk& chunk) {
         case Op::PushReal: operands = fmt::format("{}", std::bit_cast<double>(in.imm)); break;
         case Op::LoadMemberBool: case Op::LoadMemberInt: case Op::LoadMemberReal:
         case Op::StoreMemberBool: case Op::StoreMemberInt16: case Op::StoreMemberInt32: case Op::StoreMemberReal:
-        case Op::ForTest: case Op::CopyPlace:
+        case Op::ForTest: case Op::CopyPlace: case Op::LoadPart: case Op::StorePart:
             operands = fmt::format("{} {}", in.a, in.b);
             break;
         case Op::StoreMemberWrapped:

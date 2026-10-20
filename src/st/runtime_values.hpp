@@ -55,6 +55,25 @@ inline Value convert(const Value& value, DataType type) {
     }
 }
 
+// A part of an integer or bit string, like myWord.%X3: the bits, as a BOOL
+// for a single bit.
+inline Value extractPart(std::int64_t whole, const BitPart& part) {
+    const auto mask = (std::uint64_t{1} << part.width) - 1;
+    const auto bits = (static_cast<std::uint64_t>(whole) >> part.shift) & mask;
+    if (part.width == 1) {
+        return bits != 0;
+    }
+    return static_cast<std::int64_t>(bits);
+}
+
+// `whole` with a part replaced by `value`, the rest unchanged.
+inline std::int64_t insertPart(std::int64_t whole, const BitPart& part, const Value& value) {
+    const auto mask = ((std::uint64_t{1} << part.width) - 1) << part.shift;
+    const auto bits = (static_cast<std::uint64_t>(whole) & ~mask) |
+                      ((static_cast<std::uint64_t>(toInteger(value)) << part.shift) & mask);
+    return wrapInteger(static_cast<std::int64_t>(bits), part.whole);
+}
+
 inline Value defaultValue(DataType type) {
     switch (type) {
     case DataType::Bool: return false;

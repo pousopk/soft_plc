@@ -189,3 +189,18 @@ TEST_CASE("Typed literals must fit their type, and are checked like variables of
     CHECK(errorOf(program("flag := BOOL#2;")) == "BOOL# takes 0, 1, TRUE or FALSE, not 2");
     CHECK(errorOf(program("small := INT#2.5;")) == "INT# needs an integer, not 2.5");
 }
+
+TEST_CASE("Part access needs a bit string or an integer, and a part inside it") {
+    const auto p = [](const char* body) {
+        return errorOf(std::string("PROGRAM T VAR w : WORD; r : REAL; f : BOOL; b : BYTE; a : ARRAY[1..2] OF WORD; "
+                                   "END_VAR\n") + body + "\nEND_PROGRAM");
+    };
+    CHECK(p("f := w.%X16;") == "'w.%X16' is out of range: a WORD has bits %X0 to %X15");
+    CHECK(p("b := w.%B2;") == "'w.%B2' is out of range: a WORD has bytes %B0 to %B1");
+    CHECK(p("w := w.%W0;") == "'w.%W0' is out of range: a WORD has no words inside it");
+    CHECK(p("f := r.%X0;") == "bit access needs a bit string or an integer, not REAL");
+    CHECK(p("f := w.%X1.%X0;") == "a part like '.%X1' must come last");
+    CHECK(p("r := w.%X1;") == "can't assign BOOL to 'r', which is REAL");
+    CHECK(p("b := b.%B0;") == "'b.%B0' is out of range: a BYTE has no bytes inside it");
+    CHECK(p("f := a[1].%X15; a[2].%B0 := b;").empty());
+}

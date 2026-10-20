@@ -755,6 +755,7 @@ private:
         access.leafOffset = 0;
         access.bitOffset = 0;
         access.dynamic.clear();
+        access.part.reset();
         for (; next < access.selectors.size(); ++next) {
             std::visit(Overloaded{
                            [&](const FieldSelector& field) {
@@ -811,11 +812,44 @@ private:
                                path += "[...]";
                                type = type->element;
                            },
+                           [&](const PartSelector& part) {
+                               if (next + 1 != access.selectors.size()) {
+                                   fail(part.location, fmt::format("a part like '{}' must come last", partText(part)));
+                               }
+                               const auto whole = type->elementary;
+                               if (type->kind != Type::Kind::Elementary || (!isBitString(whole) && !isIntegerType(whole))) {
+                                   fail(part.location, fmt::format("bit access needs a bit string or an integer, not {}",
+                                                                   type->name));
+                               }
+                               const unsigned partWidth = part.size == AccessSize::Bit    ? 1
+                                                          : part.size == AccessSize::Byte ? 8
+                                                                                          : 16;
+                               const unsigned count = bitWidth(whole) / partWidth;
+                               if (part.index >= count || partWidth >= bitWidth(whole)) {
+                                   const char* what = part.size == AccessSize::Bit    ? "bits"
+                                                      : part.size == AccessSize::Byte ? "bytes"
+                                                                                      : "words";
+                                   const auto letter = partText(part).substr(1, 2);
+                                   fail(part.location,
+                                        count <= 1 ? fmt::format("'{}{}' is out of range: a {} has no {} inside it", path,
+                                                                 partText(part), type->name, what)
+                                                   : fmt::format("'{}{}' is out of range: a {} has {} {}0 to {}{}", path,
+                                                                 partText(part), type->name, what, letter, letter,
+                                                                 count - 1));
+                               }
+                               access.part = BitPart{part.index * partWidth, partWidth, whole};
+                               path += partText(part);
+                               type = elementaryType(part.size == AccessSize::Bit    ? DataType::Bool
+                                                     : part.size == AccessSize::Byte ? DataType::Byte
+                                                                                     : DataType::Word);
+                           },
                        },
                        access.selectors[next]);
         }
         access.type = type;
-        access.directLeaf = access.dynamic.empty() && !variable->address ? variable->leaf + access.leafOffset : kNoSlot;
+        access.directLeaf = access.dynamic.empty() && !variable->address && !access.part
+                                ? variable->leaf + access.leafOffset
+                                : kNoSlot;
         return *type;
     }
 

@@ -374,3 +374,23 @@ TEST_CASE("Both engines agree on the new integer and bit-string types") {
         END_PROGRAM
     )", 500);
 }
+
+TEST_CASE("Both engines agree on bits, bytes and words of variables, also with run-time indices") {
+    runBothEngines(R"(
+        PROGRAM Parts
+        VAR
+            in0 AT %IB0 : USINT; in1 AT %IW2 : WORD;
+            words : ARRAY[0..3] OF WORD; located AT %MB0 : ARRAY[0..3] OF WORD;
+            d : DWORD; l : LINT; i : USINT; f : BOOL; b : BYTE;
+        END_VAR
+            i := in0 MOD 4;
+            words[i].%X1 := NOT words[i].%X1;
+            located[i].%B1 := in1.%B0;
+            f := located[(i + 1) MOD 4].%X9 XOR in1.%X15;
+            d.%W1 := words[i];
+            d.%X0 := f;
+            l.%B7 := in1.%B1;
+            b := d.%B2 OR located[i].%B0;
+        END_PROGRAM
+    )", 300);
+}

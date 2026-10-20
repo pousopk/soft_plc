@@ -155,3 +155,16 @@ TEST_CASE("A type name and '#' start a typed literal") {
     REQUIRE_FALSE(error.has_value());
     CHECK(error.error().message == "unexpected character '#'");
 }
+
+TEST_CASE("After a dot, %X3, %B1 and %W0 select part of a variable") {
+    using K = TokenKind;
+    CHECK(kindsOf("w.%X3") == std::vector<K>{K::Identifier, K::Dot, K::PartSelector, K::EndOfFile});
+    const auto tokens = *tokenize("d.%W1");
+    const auto part = std::get<softplc::Address>(tokens[2].value);
+    CHECK(part.size == softplc::AccessSize::Word);
+    CHECK(part.byteOffset == 1);
+    CHECK(std::get<softplc::Address>((*tokenize("b.%x7"))[2].value).size == softplc::AccessSize::Bit);
+    const auto error = tokenize("x := %X3;");
+    REQUIRE_FALSE(error.has_value());
+    CHECK(error.error().message == "invalid address '%X3': area must be I, Q, M or DB");
+}
