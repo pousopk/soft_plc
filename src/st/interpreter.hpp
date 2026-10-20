@@ -177,7 +177,7 @@ private:
 
     Value evaluate(const Expression& expression, Instance& self);
     Value callFunction(const CallExpression& call, Instance& self);
-    Value callBuiltin(const CallExpression& call, Instance& self, SourceLocation where);
+    Value callBuiltin(const CallExpression& call, Instance& self, const Expression& expression);
     Value invokeFunction(std::size_t index, std::span<const Argument> arguments);
     Value evaluateBinary(const BinaryExpression& binary, const Expression& expression, Instance& self);
 

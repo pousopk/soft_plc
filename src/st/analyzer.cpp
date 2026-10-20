@@ -1082,6 +1082,7 @@ private:
         switch (function) {
         case BuiltinFunction::Min:
         case BuiltinFunction::Max:
+        case BuiltinFunction::Concat:
             if (call.arguments.size() < 2) {
                 fail(where, fmt::format("{} needs at least 2 arguments", name));
             }
@@ -1095,9 +1096,16 @@ private:
         case BuiltinFunction::Shl:
         case BuiltinFunction::Shr:
         case BuiltinFunction::Rol:
-        case BuiltinFunction::Ror: requireArgumentCount(call, 2, where); break;
+        case BuiltinFunction::Ror:
+        case BuiltinFunction::Left:
+        case BuiltinFunction::Right:
+        case BuiltinFunction::Find: requireArgumentCount(call, 2, where); break;
         case BuiltinFunction::Limit:
-        case BuiltinFunction::Sel: requireArgumentCount(call, 3, where); break;
+        case BuiltinFunction::Sel:
+        case BuiltinFunction::Mid:
+        case BuiltinFunction::Insert:
+        case BuiltinFunction::Delete: requireArgumentCount(call, 3, where); break;
+        case BuiltinFunction::Replace: requireArgumentCount(call, 4, where); break;
         default: requireArgumentCount(call, 1, where); break;
         }
         orderBuiltinArguments(call, function, where);
@@ -1170,6 +1178,15 @@ private:
             types[0] = DataType::DInt;
             return common;
         }
+        case BuiltinFunction::Len:
+        case BuiltinFunction::Left:
+        case BuiltinFunction::Right:
+        case BuiltinFunction::Mid:
+        case BuiltinFunction::Concat:
+        case BuiltinFunction::Insert:
+        case BuiltinFunction::Delete:
+        case BuiltinFunction::Replace:
+        case BuiltinFunction::Find: return textCall(call, function, name);
         case BuiltinFunction::Shl:
         case BuiltinFunction::Shr:
         case BuiltinFunction::Rol:
@@ -1194,6 +1211,35 @@ private:
         case BuiltinFunction::None: break;
         }
         return DataType::Unknown;
+    }
+
+    // LEN, LEFT, ..., FIND: their texts must be of one kind (STRING or
+    // WSTRING); positions and lengths are integers. The result is a text of
+    // that kind, or an INT for LEN and FIND.
+    DataType textCall(CallExpression& call, BuiltinFunction function, const std::string& name) {
+        const auto names = builtinInputNames(function, call.arguments.size());
+        auto kind = DataType::Unknown;
+        call.argumentTypes.clear();
+        for (std::size_t i = 0; i < call.arguments.size(); ++i) {
+            const auto& value = *call.arguments[i].value;
+            const bool isText = names[i].rfind("IN", 0) == 0; // IN, IN1, IN2, ...: the texts
+            if (isText) {
+                if (!isStringType(value.type)) {
+                    fail(value.location,
+                         fmt::format("{} needs a STRING or WSTRING for {}, not {}", name, names[i], typeText(value)));
+                }
+                if (kind != DataType::Unknown && value.type != kind) {
+                    fail(value.location, fmt::format("{} needs texts of one kind, but got {} and {}", name,
+                                                     dataTypeName(kind), dataTypeName(value.type)));
+                }
+                kind = value.type;
+            } else if (!isInteger(value.type)) {
+                fail(value.location, fmt::format("{} needs an integer for {}, not {}", name, names[i], typeText(value)));
+            }
+            call.argumentTypes.push_back(value.type);
+        }
+        call.builtin = function;
+        return function == BuiltinFunction::Len || function == BuiltinFunction::Find ? DataType::Int : kind;
     }
 
     // ------------------------------------------------------------ Expressions

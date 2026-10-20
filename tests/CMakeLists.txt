@@ -32,6 +32,7 @@ add_executable(soft_plc_tests
   st/types_test.cpp
   st/strings_text_test.cpp
   st/strings_test.cpp
+  st/string_functions_test.cpp
 )
 target_link_libraries(soft_plc_tests PRIVATE soft_plc_core snap7_static doctest::doctest fmt::fmt)
 target_include_directories(soft_plc_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

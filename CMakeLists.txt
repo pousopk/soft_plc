@@ -87,6 +87,7 @@ add_library(soft_plc_language STATIC
   src/st/value_text.cpp
   src/st/string_pool.cpp
   src/st/string_text.cpp
+  src/st/string_functions.cpp
 )
 target_include_directories(soft_plc_language PUBLIC src)
 target_link_libraries(soft_plc_language

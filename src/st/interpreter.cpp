@@ -3,6 +3,7 @@
 #include "st/compiler.hpp"
 #include "st/functions.hpp"
 #include "st/runtime_values.hpp"
+#include "st/string_functions.hpp"
 #include "st/string_text.hpp"
 #include "util/overloaded.hpp"
 #include "util/text.hpp"
@@ -1089,14 +1090,20 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
             break;
         case Op::Call: run(*self.children[in.a]); break;
         case Op::CallBuiltin: {
-            const auto& call = *chunk.calls[in.a].call;
+            const auto& info = chunk.calls[in.a];
+            const auto& call = *info.call;
             const auto count = call.arguments.size();
             std::array<Value, kMaxCallArguments> inputs;
             sp -= count;
             for (std::size_t i = 0; i < count; ++i) {
                 inputs[i] = fromSlot(sp[i], call.argumentTypes[i]);
             }
-            *sp++ = toSlot(applyBuiltin(call.builtin, call.resultType, std::span(inputs.data(), count), where()));
+            if (isStringFunction(call.builtin)) {
+                const auto temp = info.resultTemp == kNoSlot ? 0 : self.tempBase + static_cast<std::int64_t>(info.resultTemp);
+                *sp++ = toSlot(applyStringBuiltin(pool_, call.builtin, std::span(inputs.data(), count), temp, where()));
+            } else {
+                *sp++ = toSlot(applyBuiltin(call.builtin, call.resultType, std::span(inputs.data(), count), where()));
+            }
             break;
         }
         case Op::CallFunction: {
@@ -1171,7 +1178,7 @@ Value Interpreter::evaluate(const Expression& expression, Instance& self) {
                           },
                           [&](const CallExpression& call) -> Value {
                               if (call.builtin != BuiltinFunction::None) {
-                                  return callBuiltin(call, self, expression.location);
+                                  return callBuiltin(call, self, expression);
                               }
                               const auto result = callFunction(call, self);
                               if (isStringType(expression.type)) {
@@ -1212,13 +1219,17 @@ Value asArgument(const Value& value, DataType type) {
 
 } // namespace
 
-Value Interpreter::callBuiltin(const CallExpression& call, Instance& self, SourceLocation where) {
+Value Interpreter::callBuiltin(const CallExpression& call, Instance& self, const Expression& expression) {
     std::array<Value, kMaxCallArguments> values;
     const auto count = call.arguments.size();
     for (std::size_t i = 0; i < count; ++i) {
         values[i] = asArgument(evaluate(*call.arguments[i].value, self), call.argumentTypes[i]);
     }
-    return applyBuiltin(call.builtin, call.resultType, std::span(values.data(), count), where);
+    if (isStringFunction(call.builtin)) {
+        const auto temp = expression.stringTemp == kNoSlot ? std::int64_t{0} : tempHandle(self, expression);
+        return applyStringBuiltin(pool_, call.builtin, std::span(values.data(), count), temp, expression.location);
+    }
+    return applyBuiltin(call.builtin, call.resultType, std::span(values.data(), count), expression.location);
 }
 
 // All the arguments are worked out first, before the function's frame is

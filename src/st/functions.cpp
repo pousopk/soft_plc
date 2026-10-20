@@ -28,7 +28,10 @@ constexpr NamedFunction kFunctions[] = {
     {"FLOOR", BuiltinFunction::Floor}, {"MIN", BuiltinFunction::Min},     {"MAX", BuiltinFunction::Max},
     {"LIMIT", BuiltinFunction::Limit}, {"SEL", BuiltinFunction::Sel},     {"MUX", BuiltinFunction::Mux},
     {"SHL", BuiltinFunction::Shl},     {"SHR", BuiltinFunction::Shr},     {"ROL", BuiltinFunction::Rol},
-    {"ROR", BuiltinFunction::Ror},
+    {"ROR", BuiltinFunction::Ror},     {"LEN", BuiltinFunction::Len},     {"LEFT", BuiltinFunction::Left},
+    {"RIGHT", BuiltinFunction::Right}, {"MID", BuiltinFunction::Mid},     {"CONCAT", BuiltinFunction::Concat},
+    {"INSERT", BuiltinFunction::Insert}, {"DELETE", BuiltinFunction::Delete}, {"REPLACE", BuiltinFunction::Replace},
+    {"FIND", BuiltinFunction::Find},
 };
 
 // Whether FROM_TO_TO exists: between any integers and bit strings, integers
@@ -161,6 +164,25 @@ std::vector<std::string> builtinInputNames(BuiltinFunction function, std::size_t
     case BuiltinFunction::Rol:
     case BuiltinFunction::Ror:
         return {"IN", "N"};
+    case BuiltinFunction::Left:
+    case BuiltinFunction::Right:
+        return {"IN", "L"};
+    case BuiltinFunction::Mid:
+    case BuiltinFunction::Delete:
+        return {"IN", "L", "P"};
+    case BuiltinFunction::Insert:
+        return {"IN1", "IN2", "P"};
+    case BuiltinFunction::Replace:
+        return {"IN1", "IN2", "L", "P"};
+    case BuiltinFunction::Find:
+        return {"IN1", "IN2"};
+    case BuiltinFunction::Concat: {
+        std::vector<std::string> names;
+        for (std::size_t i = 1; i <= count; ++i) {
+            names.push_back(fmt::format("IN{}", i));
+        }
+        return names;
+    }
     case BuiltinFunction::Min:
     case BuiltinFunction::Max: {
         std::vector<std::string> names;
@@ -277,6 +299,15 @@ Value applyBuiltin(BuiltinFunction function, DataType result, std::span<const Va
     case BuiltinFunction::Shr:
     case BuiltinFunction::Rol:
     case BuiltinFunction::Ror: return shiftBits(function, toInteger(arguments[0]), toInteger(arguments[1]), result);
+    case BuiltinFunction::Len: // texts: applyStringBuiltin computes these
+    case BuiltinFunction::Left:
+    case BuiltinFunction::Right:
+    case BuiltinFunction::Mid:
+    case BuiltinFunction::Concat:
+    case BuiltinFunction::Insert:
+    case BuiltinFunction::Delete:
+    case BuiltinFunction::Replace:
+    case BuiltinFunction::Find:
     case BuiltinFunction::None:
         break;
     }
