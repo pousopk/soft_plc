@@ -13,6 +13,8 @@ enum class TokenKind {
     Real,          // 3.14, 1.5E3
     Time,          // T#500ms, TIME#1m30s (value: milliseconds)
     TypePrefix,    // INT# in INT#5 or WORD# in WORD#16#FF (text: the type name)
+    StringLiteral,  // 'text' (value: the characters, escapes resolved)
+    WStringLiteral, // "text"
     DirectAddress, // %IX0.0, %MW10
     PartSelector,  // %X3, %B1 or %W0 after a dot, as in myWord.%X3 (value: an Address with size and index)
     True,          // TRUE
@@ -73,7 +75,7 @@ struct Token {
     // Integer and Time tokens carry an integer (Time: milliseconds), Real
     // tokens a double, DirectAddress tokens their parsed address; the rest
     // carry nothing (monostate).
-    std::variant<std::monostate, std::int64_t, double, Address> value;
+    std::variant<std::monostate, std::int64_t, double, Address, std::u16string> value;
 };
 
 } // namespace softplc::st

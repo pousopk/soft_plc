@@ -1,5 +1,6 @@
 #include "st/lexer.hpp"
 #include "st/ast.hpp"
+#include "st/string_text.hpp"
 #include "util/text.hpp"
 #include <algorithm>
 #include <cctype>
@@ -15,6 +16,8 @@ const char* tokenKindName(TokenKind kind) {
     case TokenKind::Real: return "real number";
     case TokenKind::Time: return "TIME literal";
     case TokenKind::TypePrefix: return "typed literal";
+    case TokenKind::StringLiteral: return "string";
+    case TokenKind::WStringLiteral: return "WSTRING string";
     case TokenKind::PartSelector: return "part like %X3";
     case TokenKind::DirectAddress: return "address";
     case TokenKind::True: return "'TRUE'";
@@ -207,6 +210,9 @@ private:
         if (c == '%') {
             return previous_ == TokenKind::Dot ? partSelector() : directAddress();
         }
+        if (c == '\'' || c == '"') {
+            return stringLiteral();
+        }
         return symbol();
     }
 
@@ -274,6 +280,31 @@ private:
             fail(start, fmt::format("invalid TIME literal '{}' (examples: T#500ms, T#1m30s)", text));
         }
         return Token{TokenKind::Time, std::move(text), start, total};
+    }
+
+    // 'text' or "text", with IEC's $ escapes. A string ends at its own kind
+    // of quote, unless the quote is escaped ($' or $"); it can't span lines.
+    Token stringLiteral() {
+        const auto start = location_;
+        const char quote = advance();
+        const auto begin = pos_;
+        while (!atEnd() && peek() != quote && peek() != '\n') {
+            if (peek() == '$' && pos_ + 1 < source_.size() && source_[pos_ + 1] != '\n') {
+                advance(); // the escape's first character; the next one is skipped below
+            }
+            advance();
+        }
+        if (atEnd() || peek() != quote) {
+            fail(start, "string literal isn't closed");
+        }
+        const auto inside = source_.substr(begin, pos_ - begin);
+        advance(); // the closing quote
+        auto text = decodeLiteral(inside, quote == '\'' ? TextKind::String : TextKind::WString);
+        if (!text) {
+            fail(start, text.error());
+        }
+        return Token{quote == '\'' ? TokenKind::StringLiteral : TokenKind::WStringLiteral,
+                     std::string(source_.substr(begin - 1, pos_ - begin + 1)), start, std::move(*text)};
     }
 
     // %X3, %B1 or %W0 after a dot: a bit, byte or word of a variable, as

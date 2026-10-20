@@ -268,6 +268,10 @@ private:
             }
         }
         spec.name = expect(TokenKind::Identifier, "a type name").text;
+        if (match(TokenKind::LeftBracket)) { // STRING[20]; the analyzer checks the type takes a length
+            spec.stringLength = signedInteger("the string's length, as in STRING[20]");
+            expect(TokenKind::RightBracket, "']' after the length");
+        }
         return spec;
     }
 
@@ -629,6 +633,14 @@ private:
             advance();
             return makeExpression(Literal{std::get<std::int64_t>(token.value), true}, token.location);
         case TokenKind::TypePrefix: return typedLiteral();
+        case TokenKind::StringLiteral:
+        case TokenKind::WStringLiteral: {
+            advance();
+            Literal literal;
+            literal.type = token.kind == TokenKind::StringLiteral ? DataType::String : DataType::WString;
+            literal.text = std::get<std::u16string>(token.value);
+            return makeExpression(std::move(literal), token.location);
+        }
         case TokenKind::Identifier: {
             const auto location = token.location;
             const auto name = token.text;
@@ -658,6 +670,9 @@ private:
         const Token prefix = advance();
         const auto type = *elementaryTypeFromName(prefix.text);
         const auto name = std::string(dataTypeName(type));
+        if (isStringType(type) || isCharType(type)) {
+            return typedText(prefix, type, name);
+        }
         const bool negative = match(TokenKind::Minus);
         const Token value = advance();
         Literal literal;
@@ -692,6 +707,29 @@ private:
             literal.value = value.kind == TokenKind::True;
             break;
         default: fail(value, fmt::format("expected a value after {}#, found {}", name, describe(value)));
+        }
+        return makeExpression(std::move(literal), prefix.location);
+    }
+
+    // STRING#'abc', WSTRING#"abc", CHAR#'a', WCHAR#"a". A CHAR literal holds
+    // the character's code, like an integer literal.
+    ExpressionPtr typedText(const Token& prefix, DataType type, const std::string& name) {
+        const bool wide = type == DataType::WString || type == DataType::WChar;
+        const Token value = advance();
+        if (value.kind != (wide ? TokenKind::WStringLiteral : TokenKind::StringLiteral)) {
+            fail(value, fmt::format("{}# needs a {} literal, found {}", name, wide ? "\"double-quoted\"" : "'single-quoted'",
+                                    describe(value)));
+        }
+        Literal literal;
+        literal.type = type;
+        const auto& text = std::get<std::u16string>(value.value);
+        if (isCharType(type)) {
+            if (text.size() != 1) {
+                fail(value, fmt::format("{}# needs one character, not {}", name, text.size()));
+            }
+            literal.value = std::int64_t{text[0]};
+        } else {
+            literal.text = text;
         }
         return makeExpression(std::move(literal), prefix.location);
     }

@@ -47,6 +47,10 @@ enum class DataType {
     DWord,         // 32 bits
     Real,          // 32-bit floating point
     Time,          // a duration, in milliseconds (32-bit, like Siemens)
+    String,        // text of 1-byte characters, at most a fixed length: STRING[20] (254 without a length)
+    WString,       // text of 2-byte characters: WSTRING[20]
+    Char,          // one 1-byte character, held as its code
+    WChar,         // one 2-byte character
     AnyInt,        // an integer literal like 42, which adapts to any integer type, bit string or REAL
     FunctionBlock, // an instance of a function block, like `t1 : TON`
     Array,         // ARRAY[1..10] OF INT
@@ -65,6 +69,14 @@ std::span<const DataType> elementaryTypes();
 bool isIntegerType(DataType type);  // SINT .. LINT, signed or not (not integer literals)
 bool isUnsignedType(DataType type); // USINT, UINT, UDINT
 bool isBitString(DataType type);    // BYTE, WORD, DWORD (BOOL is a bit string too, but treated apart)
+bool isStringType(DataType type);   // STRING, WSTRING
+bool isCharType(DataType type);     // CHAR, WCHAR
+std::size_t stringBits(DataType type, std::size_t length); // the size of STRING[length] or WSTRING[length] in memory
+
+// The length of STRING and WSTRING without one, and the most they can have.
+constexpr std::size_t kDefaultStringLength = 254;
+constexpr std::size_t kMaxStringLength = 254;
+constexpr std::size_t kMaxWStringLength = 16382;
 
 // Size in bits: 1 for BOOL, 8 for BYTE, ..., 64 for LINT; 0 for non-elementary types.
 unsigned bitWidth(DataType type);
@@ -99,6 +111,7 @@ struct TypeSpec {
     std::string name;
     std::vector<ArrayDimension> dimensions; // empty when it's not an array
     SourceLocation location;
+    std::optional<std::int64_t> stringLength; // STRING[20]: the 20
 };
 
 std::string formatTypeSpec(const TypeSpec& spec); // "INT", "ARRAY[1..10, 0..3] OF Point"
@@ -128,9 +141,10 @@ struct Type {
     };
 
     struct Leaf {
-        DataType type;          // BOOL, INT, DINT, REAL or TIME
+        DataType type;          // an elementary type: BOOL, INT, ..., STRING
         std::size_t bitOffset;  // from the start of the type (S7 layout)
         std::string suffix;     // the path from the type to the leaf: "", ".x", "[3].y"
+        std::size_t stringLength = 0; // for STRING and WSTRING: how many characters fit
     };
 
     Kind kind = Kind::Elementary;
@@ -143,6 +157,7 @@ struct Type {
     std::vector<Field> fields;               // Struct
     std::vector<Leaf> leaves;                // every leaf, in order
     std::size_t bitSize = 0;                 // size in the S7 layout, in bits
+    std::size_t stringLength = 0;            // STRING and WSTRING: how many characters fit
 
     std::size_t leafCount() const { return leaves.size(); }
     bool isAggregate() const { return kind != Kind::Elementary; }
@@ -174,7 +189,8 @@ enum class BinaryOperator {
 struct Literal {
     Value value;
     bool isTime = false;                // T#... literals hold milliseconds in an int64
-    DataType type = DataType::Unknown;  // set for typed literals like INT#5
+    DataType type = DataType::Unknown;  // set for typed literals like INT#5, and for all text literals
+    std::u16string text{};              // the text of a STRING or WSTRING literal
 };
 
 // `.name` after a variable: a struct field, or a function block's input or output.

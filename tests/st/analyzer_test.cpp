@@ -219,3 +219,26 @@ TEST_CASE("A literal in a bit-string operation must fit the bit string") {
     CHECK(p("f := w = 16#10000;") == "65536 doesn't fit in WORD (0 to 65535)");
     CHECK(p("w := w AND 16#FF00; f := w > 16#00FF;").empty());
 }
+
+TEST_CASE("String and character type rules") {
+    const auto p = [](const char* body) {
+        return errorOf(std::string("PROGRAM T VAR s : STRING; t : STRING[3]; w : WSTRING; c : CHAR; wc : WCHAR; "
+                                   "f : BOOL; i : INT; END_VAR\n") + body + "\nEND_PROGRAM");
+    };
+    CHECK(p("t := 'abcdef';") == "'abcdef' is 6 characters, too long for STRING[3]");
+    CHECK(p("w := s;") == "can't assign STRING to 'w', which is WSTRING (convert with STRING_TO_WSTRING)");
+    CHECK(p("s := s + 'a';") == "'+' needs numbers, but got STRING and STRING");
+    CHECK(p("s := 'ab'; t := s; s := t; w := \"x\"; c := 'a'; wc := \"b\"; f := c = 'b'; f := s < 'abc';").empty());
+    CHECK(p("f := w <> \"x\"; f := wc >= \"a\"; c := CHAR#'z'; s := STRING#'q';").empty());
+    CHECK(p("c := 'ab';") == "can't assign STRING to 'c', which is CHAR");
+    CHECK(p("f := s = w;") == "'=' needs two texts of one kind, but got STRING and WSTRING");
+    CHECK(p("CASE s OF 1: i := 1; END_CASE;") == "the CASE selector must be an integer, not STRING");
+    CHECK(p("i := c;") == "can't assign CHAR to 'i', which is INT");
+    CHECK(p("c := CHAR#'ab';") == "CHAR# needs one character, not 2");
+    CHECK(errorOf("PROGRAM T VAR s : STRING[300]; END_VAR END_PROGRAM") == "STRING length must be 1 to 254, not 300");
+    CHECK(errorOf("PROGRAM T VAR s : WSTRING[16383]; END_VAR END_PROGRAM") ==
+          "WSTRING length must be 1 to 16382, not 16383");
+    CHECK(errorOf("PROGRAM T VAR i : INT[3]; END_VAR END_PROGRAM") == "only STRING and WSTRING take a length, not INT");
+    CHECK(errorOf("PROGRAM T VAR s : STRING[2] := 'abc'; END_VAR END_PROGRAM") ==
+          "'abc' is 3 characters, too long for STRING[2]");
+}

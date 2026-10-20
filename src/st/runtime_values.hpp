@@ -34,10 +34,12 @@ inline std::int64_t wrapInteger(std::int64_t value, DataType type) {
     switch (type) {
     case DataType::SInt: return static_cast<std::int8_t>(value);
     case DataType::USInt:
-    case DataType::Byte: return static_cast<std::uint8_t>(value);
+    case DataType::Byte:
+    case DataType::Char: return static_cast<std::uint8_t>(value);
     case DataType::Int: return static_cast<std::int16_t>(value);
     case DataType::UInt:
-    case DataType::Word: return static_cast<std::uint16_t>(value);
+    case DataType::Word:
+    case DataType::WChar: return static_cast<std::uint16_t>(value);
     case DataType::DInt:
     case DataType::Time: return static_cast<std::int32_t>(value);
     case DataType::UDInt:

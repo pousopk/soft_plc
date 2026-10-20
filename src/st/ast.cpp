@@ -209,7 +209,7 @@ private:
 constexpr DataType kElementaryTypes[] = {
     DataType::Bool, DataType::SInt,  DataType::USInt, DataType::Int,  DataType::UInt, DataType::DInt,
     DataType::UDInt, DataType::LInt, DataType::Byte,  DataType::Word, DataType::DWord, DataType::Real,
-    DataType::Time,
+    DataType::Time, DataType::String, DataType::WString, DataType::Char, DataType::WChar,
 };
 
 } // namespace
@@ -230,6 +230,10 @@ const char* dataTypeName(DataType type) {
     case DataType::DWord: return "DWORD";
     case DataType::Real: return "REAL";
     case DataType::Time: return "TIME";
+    case DataType::String: return "STRING";
+    case DataType::WString: return "WSTRING";
+    case DataType::Char: return "CHAR";
+    case DataType::WChar: return "WCHAR";
     case DataType::AnyInt: return "integer literal";
     case DataType::FunctionBlock: return "function block";
     case DataType::Array: return "ARRAY";
@@ -276,6 +280,16 @@ bool isBitString(DataType type) {
     return type == DataType::Byte || type == DataType::Word || type == DataType::DWord;
 }
 
+bool isStringType(DataType type) { return type == DataType::String || type == DataType::WString; }
+
+bool isCharType(DataType type) { return type == DataType::Char || type == DataType::WChar; }
+
+std::size_t stringBits(DataType type, std::size_t length) {
+    // Siemens: a STRING[n] is 2 header bytes (maximum, current length) and n
+    // bytes; a WSTRING[n] 2 header words and n words.
+    return type == DataType::String ? (length + 2) * 8 : (length + 2) * 16;
+}
+
 unsigned bitWidth(DataType type) {
     switch (type) {
     case DataType::Bool: return 1;
@@ -291,6 +305,8 @@ unsigned bitWidth(DataType type) {
     case DataType::Real:
     case DataType::Time: return 32;
     case DataType::LInt: return 64;
+    case DataType::Char: return 8;
+    case DataType::WChar: return 16;
     default: return 0;
     }
 }
@@ -300,7 +316,7 @@ std::pair<std::int64_t, std::int64_t> integerRange(DataType type) {
         return {std::numeric_limits<std::int64_t>::min(), std::numeric_limits<std::int64_t>::max()};
     }
     const unsigned bits = bitWidth(type);
-    if (isUnsignedType(type) || isBitString(type)) {
+    if (isUnsignedType(type) || isBitString(type) || isCharType(type)) {
         return {0, (std::int64_t{1} << bits) - 1};
     }
     return {-(std::int64_t{1} << (bits - 1)), (std::int64_t{1} << (bits - 1)) - 1};
@@ -340,7 +356,11 @@ const Type* elementaryType(DataType type) {
             entry.name = dataTypeName(t);
             entry.elementary = t;
             entry.bitSize = bitWidth(t);
-            entry.leaves.push_back(Type::Leaf{t, 0, ""});
+            if (isStringType(t)) {
+                entry.stringLength = kDefaultStringLength;
+                entry.bitSize = stringBits(t, kDefaultStringLength);
+            }
+            entry.leaves.push_back(Type::Leaf{t, 0, "", entry.stringLength});
             list.push_back(std::move(entry));
         }
         return list;

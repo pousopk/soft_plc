@@ -477,3 +477,22 @@ TEST_CASE("A LINT in a data block takes 8 bytes, most significant first") {
     CHECK(block[9] == 0xFE);
     CHECK(run.integer("copy") == -2);
 }
+
+TEST_CASE("Strings and characters in the S7 layout") {
+    auto unit = compileProgram("TYPE R : STRUCT a : BOOL; s : STRING[3]; c : CHAR; END_STRUCT; END_TYPE\n"
+                               "PROGRAM P VAR r AT %DB1.DBB0 : R; names AT %DB2.DBB0 : ARRAY[1..2] OF STRING[3]; END_VAR "
+                               "END_PROGRAM");
+    REQUIRE(unit.has_value());
+    const auto& fields = unit->program.variables[0].typeInfo->fields;
+    CHECK(fields[1].bitOffset == 16);
+    CHECK(fields[2].bitOffset == 56);
+    CHECK(unit->program.variables[0].typeInfo->bitSize == 64);
+    CHECK(dataBlocksUsedBy(*unit).at(1) == 8);
+    CHECK(dataBlocksUsedBy(*unit).at(2) == 12); // each STRING[3] takes 5 bytes, from an even byte
+    CHECK(errorOf("PROGRAM P VAR x AT %MB1 : STRING[4]; END_VAR END_PROGRAM") ==
+          "STRING[4] 'x' needs an even byte address like %MB10 or %DB1.DBB0, not %MB1");
+    CHECK(errorOf("PROGRAM P VAR x AT %MW0 : STRING; END_VAR END_PROGRAM") ==
+          "STRING 'x' needs an even byte address like %MB10 or %DB1.DBB0, not %MW0");
+    CHECK(errorOf("PROGRAM P VAR c AT %MB1 : CHAR; w AT %MW2 : WCHAR; s AT %MB4 : WSTRING[2]; END_VAR END_PROGRAM") ==
+          "");
+}

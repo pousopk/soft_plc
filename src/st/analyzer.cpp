@@ -2,6 +2,7 @@
 #include "st/builtins.hpp"
 #include "st/functions.hpp"
 #include "st/parser.hpp"
+#include "st/string_text.hpp"
 #include "util/overloaded.hpp"
 #include "util/text.hpp"
 #include <algorithm>
@@ -350,10 +351,37 @@ private:
     // the result when it's the whole of a TYPE declaration (TYPE Row : ARRAY...).
     const Type* resolveTypeSpec(const TypeSpec& spec, const std::string& aliasName = {}) {
         const Type* named = resolveNamedType(spec.name, spec.location);
+        if (spec.stringLength) {
+            named = stringType(*named, *spec.stringLength, spec.location);
+        }
         if (spec.dimensions.empty()) {
             return named;
         }
         return makeArray(spec, *named, aliasName);
+    }
+
+    // STRING[n] or WSTRING[n]: one Type per kind and length.
+    const Type* stringType(const Type& named, std::int64_t length, SourceLocation where) {
+        const auto kind = named.elementary;
+        if (named.kind != Type::Kind::Elementary || !isStringType(kind)) {
+            fail(where, fmt::format("only STRING and WSTRING take a length, not {}", named.name));
+        }
+        const auto most = static_cast<std::int64_t>(kind == DataType::String ? kMaxStringLength : kMaxWStringLength);
+        if (length < 1 || length > most) {
+            fail(where, fmt::format("{} length must be 1 to {}, not {}", dataTypeName(kind), most, length));
+        }
+        auto& type = stringTypes_[{kind, length}];
+        if (type == nullptr) {
+            Type* made = newType();
+            made->kind = Type::Kind::Elementary;
+            made->elementary = kind;
+            made->name = fmt::format("{}[{}]", dataTypeName(kind), length);
+            made->stringLength = static_cast<std::size_t>(length);
+            made->bitSize = stringBits(kind, made->stringLength);
+            made->leaves.push_back(Type::Leaf{kind, 0, "", made->stringLength});
+            type = made;
+        }
+        return type;
     }
 
     Type* newType() {
@@ -378,16 +406,18 @@ private:
         type->elementLeaves = element.leafCount();
         // S7 layout: BOOL elements are packed bit after bit; everything else
         // keeps its own size (structs and arrays are already whole words).
-        type->elementBits = element.kind == Type::Kind::Elementary && element.elementary == DataType::Bool
-                                ? 1
-                                : element.bitSize;
+        // Strings start at even bytes, so an odd-sized STRING[3] (5 bytes) takes 6.
+        type->elementBits = element.kind == Type::Kind::Elementary && element.elementary == DataType::Bool ? 1
+                            : isStringType(element.elementary) ? roundUpToWord(element.bitSize)
+                                                               : element.bitSize;
         type->bitSize = roundUpToWord(count * type->elementBits);
         type->leaves.reserve(count * element.leafCount());
         for (std::size_t index = 0; index < count; ++index) {
             const auto suffix = indexSuffix(spec.dimensions, index);
             for (const auto& leaf : element.leaves) {
                 type->leaves.push_back(
-                    Type::Leaf{leaf.type, index * type->elementBits + leaf.bitOffset, suffix + leaf.suffix});
+                    Type::Leaf{leaf.type, index * type->elementBits + leaf.bitOffset, suffix + leaf.suffix,
+                               leaf.stringLength});
             }
         }
         return type;
@@ -422,7 +452,8 @@ private:
             }
             type->fields.push_back(Type::Field{field.name, fieldType, type->leaves.size(), bit, nullptr});
             for (const auto& leaf : fieldType->leaves) {
-                type->leaves.push_back(Type::Leaf{leaf.type, bit + leaf.bitOffset, "." + field.name + leaf.suffix});
+                type->leaves.push_back(
+                    Type::Leaf{leaf.type, bit + leaf.bitOffset, "." + field.name + leaf.suffix, leaf.stringLength});
             }
             bit += fieldType->bitSize;
             if (type->leaves.size() > kMaxLeaves) {
@@ -557,8 +588,8 @@ private:
             fail(variable.location, fmt::format("'{}' can't have an initial value: its value comes from {}",
                                                 variable.name, address.toString()));
         }
-        if (variable.typeInfo->isAggregate()) {
-            // Like S7: arrays and structs start at an even byte.
+        if (variable.typeInfo->isAggregate() || isStringType(variable.type)) {
+            // Like S7: arrays, structs and strings start at an even byte.
             const bool startsAtByte = address.size == AccessSize::Byte ||
                                       (address.size == AccessSize::Bit && address.bit == 0);
             if (!startsAtByte || address.byteOffset % 2 != 0) {
@@ -681,9 +712,11 @@ private:
             fail(value.location, fmt::format("can't assign {} to '{}', which is {}", typeText(value), targetName,
                                              target.name));
         }
-        const auto source = value.type;
         const auto targetType = target.elementary;
+        adaptCharLiteral(value, targetType);
+        const auto source = value.type;
         if (source == targetType) {
+            checkTextFits(target, value);
             return;
         }
         if (source == DataType::AnyInt && (isIntegerType(targetType) || isBitString(targetType))) {
@@ -692,7 +725,9 @@ private:
         }
         if (!widensTo(source, targetType)) {
             const bool bitsAndNumbers = (isBitString(source) && isIntegerType(targetType)) ||
-                                        (isIntegerType(source) && isBitString(targetType));
+                                        (isIntegerType(source) && isBitString(targetType)) ||
+                                        (isStringType(source) && isStringType(targetType)) ||
+                                        (isCharType(source) && isCharType(targetType));
             const auto hint = isNumeric(source) && isNumeric(targetType) ? std::string(" (values might not fit)")
                               : bitsAndNumbers ? fmt::format(" (convert with {}_TO_{})", dataTypeName(source),
                                                              dataTypeName(targetType))
@@ -701,6 +736,34 @@ private:
             fail(value.location, fmt::format("can't assign {} to '{}', which is {}{}", dataTypeName(source),
                                              targetName, dataTypeName(targetType), hint));
         }
+    }
+
+    // A one-character text literal where a CHAR or WCHAR is wanted ('a' for
+    // a CHAR) becomes that character, like an integer literal adapting to
+    // its target. The analyzer owns the tree it checks, so it may change it.
+    static void adaptCharLiteral(const Expression& value, DataType target) {
+        const auto* literal = std::get_if<Literal>(&value.node);
+        const auto kind = target == DataType::Char ? DataType::String : DataType::WString;
+        if (!isCharType(target) || literal == nullptr || literal->type != kind || literal->text.size() != 1) {
+            return;
+        }
+        auto& expression = const_cast<Expression&>(value);
+        auto& changed = std::get<Literal>(expression.node);
+        changed.value = std::int64_t{changed.text[0]};
+        changed.type = target;
+        changed.text.clear();
+        expression.type = target;
+    }
+
+    // A text literal must fit the STRING[n] it's stored in.
+    void checkTextFits(const Type& target, const Expression& value) const {
+        const auto* literal = std::get_if<Literal>(&value.node);
+        if (!isStringType(target.elementary) || literal == nullptr || literal->text.size() <= target.stringLength) {
+            return;
+        }
+        const auto kind = target.elementary == DataType::String ? TextKind::String : TextKind::WString;
+        fail(value.location, fmt::format("{} is {} characters, too long for {}", encodeLiteral(literal->text, kind),
+                                         literal->text.size(), target.name));
     }
 
     void checkLiteralFits(DataType target, const Expression& value) const {
@@ -1177,6 +1240,9 @@ private:
         if (left == DataType::Time || right == DataType::Time) {
             return timeOperation(binary, left, right, mismatch);
         }
+        if (isStringType(left) || isStringType(right) || isCharType(left) || isCharType(right)) {
+            return textOperation(binary, mismatch);
+        }
 
         // Bit strings (with BOOLs or literals) for AND, OR, XOR, =, <, ...
         const bool bitStrings = isBitLike(left) && isBitLike(right) && (isBitString(left) || isBitString(right));
@@ -1233,6 +1299,33 @@ private:
             if (!(left == DataType::Bool && right == DataType::Bool) && !bitStrings) mismatch("BOOLs or bit strings");
             binary.operandType = *common;
             return binary.operandType;
+        }
+        return DataType::Unknown;
+    }
+
+    // Texts and characters only compare, and only with their own kind:
+    // STRING with STRING (any lengths), CHAR with CHAR ('a' adapts).
+    template <class Mismatch>
+    static DataType textOperation(BinaryExpression& binary, Mismatch mismatch) {
+        adaptCharLiteral(*binary.right, binary.left->type);
+        adaptCharLiteral(*binary.left, binary.right->type);
+        switch (binary.op) {
+        case BinaryOperator::Equal:
+        case BinaryOperator::NotEqual:
+        case BinaryOperator::Less:
+        case BinaryOperator::LessEqual:
+        case BinaryOperator::Greater:
+        case BinaryOperator::GreaterEqual:
+            if (binary.left->type != binary.right->type) {
+                mismatch("two texts of one kind");
+            }
+            binary.operandType = binary.left->type;
+            return DataType::Bool;
+        case BinaryOperator::Modulo: mismatch("integers"); break;
+        case BinaryOperator::And:
+        case BinaryOperator::Or:
+        case BinaryOperator::Xor: mismatch("BOOLs or bit strings"); break;
+        default: mismatch("numbers"); break;
         }
         return DataType::Unknown;
     }
@@ -1419,6 +1512,7 @@ private:
     CompilationUnit& unit_;
     std::unordered_map<std::string, const Pou*> functionBlocks_;          // upper-case name -> user or standard block
     std::unordered_map<std::string, TypeDeclaration*> declaredTypes_;     // upper-case name -> TYPE declaration
+    std::map<std::pair<DataType, std::int64_t>, const Type*> stringTypes_; // STRING[n] and WSTRING[n], made once each
     std::unordered_map<const TypeDeclaration*, const Type*> resolvedTypes_;
     std::vector<const TypeDeclaration*> resolving_; // the TYPE declarations being built, to catch cycles
     std::unordered_map<std::string, std::size_t> functions_; // upper-case name -> index in unit_.functions
@@ -1453,7 +1547,7 @@ std::map<std::uint16_t, std::size_t> dataBlocksUsedBy(const CompilationUnit& uni
         }
         const auto& a = *variable.address;
         std::size_t width = a.size == AccessSize::Word ? 2 : a.size == AccessSize::DWord ? 4 : 1;
-        if (variable.typeInfo != nullptr && variable.typeInfo->isAggregate()) {
+        if (variable.typeInfo != nullptr && (variable.typeInfo->isAggregate() || isStringType(variable.type))) {
             width = variable.typeInfo->bitSize / 8;
         }
         auto& size = sizes[a.dbNumber];

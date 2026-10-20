@@ -168,3 +168,15 @@ TEST_CASE("After a dot, %X3, %B1 and %W0 select part of a variable") {
     REQUIRE_FALSE(error.has_value());
     CHECK(error.error().message == "invalid address '%X3': area must be I, Q, M or DB");
 }
+
+TEST_CASE("String literals: single quotes for STRING, double quotes for WSTRING") {
+    using K = TokenKind;
+    const auto plain = single("'It$'s'");
+    CHECK(plain.kind == K::StringLiteral);
+    CHECK(std::get<std::u16string>(plain.value) == u"It's");
+    CHECK(single("\"a b\"").kind == K::WStringLiteral);
+    CHECK(std::get<std::u16string>(single("''").value).empty());
+    CHECK(kindsOf("STRING#'x'") == std::vector<K>{K::TypePrefix, K::StringLiteral, K::EndOfFile});
+    CHECK(tokenize("x := 'abc").error().message == "string literal isn't closed");
+    CHECK(tokenize("x := '$q';").error().message == "unknown escape '$q' in a string");
+}
