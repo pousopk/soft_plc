@@ -192,6 +192,9 @@ private:
     // myWord.%X3 and the like: the whole leaf is read, and written back with the part changed.
     Value loadPart(const Access& access, Instance& self);
     void storePart(const Access& access, const Value& value, Instance& self);
+    // s[i]: one character of the string at `where`; stops the PLC if i is outside it.
+    Value loadChar(const Place& where, const Access& access, std::int64_t index);
+    void storeChar(const Place& where, const Access& access, std::int64_t index, const Value& value);
     void copyAggregate(const Place& from, const Place& to, const Type& type);
 
     // Texts: the scratch buffer of an expression making one, and located strings.

@@ -144,3 +144,23 @@ TEST_CASE("A located string with a bad header is read cut to its length, and its
     CHECK(r.text("copy") == u"abcd");
     CHECK(r.image().readByte(Area::Marker, 0) == 4);
 }
+
+TEST_CASE("Single characters of a string are read and written with s[i]") {
+    Runner r("PROGRAM P VAR s : STRING := 'hello'; w : WSTRING := \"abc\"; c : CHAR; wc : WCHAR; i : INT := 2;\n"
+             "    m AT %MB0 : STRING[4]; mc : CHAR; END_VAR\n"
+             "c := s[1]; s[5] := 'a'; s[i] := 'u'; wc := w[3]; w[1] := \"z\"; m := 'abc'; m[2] := 'X'; mc := m[3];\nEND_PROGRAM");
+    r.cycles(1);
+    CHECK(r.text("c") == u"h");
+    CHECK(r.text("s") == u"hulla");
+    CHECK(r.text("wc") == u"c");
+    CHECK(r.text("w") == u"zbc");
+    CHECK(r.text("m") == u"aXc");
+    CHECK(r.text("mc") == u"c");
+}
+
+TEST_CASE("A character index outside the string stops the PLC") {
+    Runner r("PROGRAM P VAR s : STRING := 'hello'; c : CHAR; i : INT := 7; END_VAR\nc := s[i];\nEND_PROGRAM");
+    CHECK_THROWS_WITH(r.cycles(1), "character index 7 is outside 's' (1..5)");
+    Runner w("PROGRAM P VAR s : STRING := 'hi'; i : INT := 0; END_VAR\ns[i] := 'x';\nEND_PROGRAM");
+    CHECK_THROWS_WITH(w.cycles(1), "character index 0 is outside 's' (1..2)");
+}

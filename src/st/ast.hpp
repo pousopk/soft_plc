@@ -252,6 +252,9 @@ struct Access {
     // For `.%X3` and the like: which bits of the leaf. `type` is then the
     // part's type (BOOL, BYTE or WORD), and there is no direct leaf.
     std::optional<BitPart> part;
+    // For s[i] on a STRING or WSTRING: the index (counting from 1). `type` is
+    // then CHAR or WCHAR, and there is no direct leaf.
+    const Expression* charIndex = nullptr;
 
     bool isPlainVariable() const { return instanceSlot == kNoSlot && selectors.empty(); }
 };

@@ -32,6 +32,10 @@ int stackEffect(Op op) {
         return -1;
     case Op::StorePlace: case Op::StorePart: case Op::CopyPlace:
         return -2;
+    case Op::LoadChar:
+        return -1;
+    case Op::StoreChar:
+        return -3;
     default:
         return 0; // NegI, NegR, Wrap*, IntToReal, Not, NotBits, Jump, LoopTick, ForTest, CheckStep, Call, Return,
                   // Index, LoadPlace
@@ -147,7 +151,12 @@ private:
     // Accesses with a fixed offset into memory that isn't in the process
     // image get the fast instructions; the rest use a place.
     bool isDirect(const Access& access) const {
-        return access.dynamic.empty() && !variableOf(access).address && !access.part;
+        return access.dynamic.empty() && !variableOf(access).address && !access.part && access.charIndex == nullptr;
+    }
+
+    std::uint32_t addCharAccess(const Access& access) {
+        chunk_.charAccesses.push_back(&access);
+        return static_cast<std::uint32_t>(chunk_.charAccesses.size() - 1);
     }
 
     std::uint32_t addPart(const BitPart& part) {
@@ -184,7 +193,10 @@ private:
         const auto type = access.type->elementary;
         if (!isDirect(access)) {
             pushOffset(access, where);
-            if (access.part) {
+            if (access.charIndex != nullptr) {
+                expression(*access.charIndex);
+                emit(Op::LoadChar, where, addPlace(access), addCharAccess(access));
+            } else if (access.part) {
                 emit(Op::LoadPart, where, addPlace(access), addPart(*access.part));
             } else {
                 emit(Op::LoadPlace, where, addPlace(access));
@@ -308,7 +320,10 @@ private:
         const auto& variable = variableOf(access);
         if (!isDirect(access)) {
             pushOffset(access, where);
-            if (access.part) {
+            if (access.charIndex != nullptr) {
+                expression(*access.charIndex);
+                emit(Op::StoreChar, where, addPlace(access), addCharAccess(access));
+            } else if (access.part) {
                 emit(Op::StorePart, where, addPlace(access), addPart(*access.part));
             } else {
                 emit(Op::StorePlace, where, addPlace(access));
@@ -554,6 +569,8 @@ const char* opName(Op op) {
     case Op::XorBits: return "XorBits";
     case Op::NotBits: return "NotBits";
     case Op::LoadPart: return "LoadPart";
+    case Op::LoadChar: return "LoadChar";
+    case Op::StoreChar: return "StoreChar";
     case Op::StorePart: return "StorePart";
     case Op::LoadMemberBool: return "LoadMemberBool";
     case Op::LoadMemberInt: return "LoadMemberInt";
@@ -627,6 +644,7 @@ std::string disassemble(const Chunk& chunk) {
         case Op::LoadMemberBool: case Op::LoadMemberInt: case Op::LoadMemberReal:
         case Op::StoreMemberBool: case Op::StoreMemberInt16: case Op::StoreMemberInt32: case Op::StoreMemberReal:
         case Op::ForTest: case Op::CopyPlace: case Op::LoadPart: case Op::StorePart: case Op::StoreMemberString:
+        case Op::LoadChar: case Op::StoreChar:
             operands = fmt::format("{} {}", in.a, in.b);
             break;
         case Op::StoreMemberWrapped:

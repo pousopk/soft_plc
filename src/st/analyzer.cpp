@@ -819,6 +819,7 @@ private:
         access.bitOffset = 0;
         access.dynamic.clear();
         access.part.reset();
+        access.charIndex = nullptr;
         for (; next < access.selectors.size(); ++next) {
             std::visit(Overloaded{
                            [&](const FieldSelector& field) {
@@ -841,6 +842,23 @@ private:
                                type = f->type;
                            },
                            [&](IndexSelector& index) {
+                               if (type->kind == Type::Kind::Elementary && isStringType(type->elementary)) {
+                                   // s[i]: one character, counting from 1 (checked at run time).
+                                   if (index.indices.size() != 1) {
+                                       fail(index.location, fmt::format("a {} takes one index, not {}",
+                                                                        dataTypeName(type->elementary), index.indices.size()));
+                                   }
+                                   auto& position = *index.indices[0];
+                                   if (!isInteger(checkExpression(position))) {
+                                       fail(position.location, fmt::format("a character index must be an integer, not {}",
+                                                                           typeText(position)));
+                                   }
+                                   access.charIndex = &position;
+                                   path += "[...]";
+                                   type = elementaryType(type->elementary == DataType::String ? DataType::Char
+                                                                                              : DataType::WChar);
+                                   return;
+                               }
                                if (type->kind != Type::Kind::Array) {
                                    fail(index.location, fmt::format("'{}' is {}, not an array", path, type->name));
                                }
@@ -910,7 +928,7 @@ private:
                        access.selectors[next]);
         }
         access.type = type;
-        access.directLeaf = access.dynamic.empty() && !variable->address && !access.part
+        access.directLeaf = access.dynamic.empty() && !variable->address && !access.part && !access.charIndex
                                 ? variable->leaf + access.leafOffset
                                 : kNoSlot;
         return *type;

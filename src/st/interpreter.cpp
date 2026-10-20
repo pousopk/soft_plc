@@ -628,6 +628,44 @@ void Interpreter::storePart(const Access& access, const Value& value, Instance& 
     storeLeaf(where, part.whole, insertPart(whole, part, convert(value, access.type->elementary)));
 }
 
+namespace {
+
+// The string an s[i] access indexes, for messages: "s" for s[i].
+std::string indexedString(const Access& access) {
+    auto whole = cloneAccess(access);
+    whole.selectors.pop_back();
+    return formatAccess(whole);
+}
+
+void checkCharIndex(std::int64_t index, std::size_t length, const Access& access) {
+    if (index < 1 || static_cast<std::size_t>(index) > length) {
+        throw RuntimeError{fmt::format("character index {} is outside '{}' (1..{})", index, indexedString(access), length),
+                           access.charIndex->location};
+    }
+}
+
+DataType stringKindOf(const Access& access) {
+    return access.type->elementary == DataType::Char ? DataType::String : DataType::WString;
+}
+
+} // namespace
+
+Value Interpreter::loadChar(const Place& where, const Access& access, std::int64_t index) {
+    const auto text = pool_.view(toInteger(loadLeaf(where, stringKindOf(access), image_)));
+    checkCharIndex(index, text.size(), access);
+    return std::int64_t{text[static_cast<std::size_t>(index - 1)]};
+}
+
+void Interpreter::storeChar(const Place& where, const Access& access, std::int64_t index, const Value& value) {
+    const auto kind = stringKindOf(access);
+    const auto handle = toInteger(loadLeaf(where, kind, image_)); // the string itself, or a located one read in
+    checkCharIndex(index, pool_.view(handle).size(), access);
+    pool_.setChar(handle, static_cast<std::size_t>(index - 1), static_cast<char16_t>(toInteger(value)));
+    if (where.variable->address) {
+        storeLeaf(where, kind, Value{handle}); // written back to the process image
+    }
+}
+
 std::int64_t Interpreter::tempHandle(const Instance& self, const Expression& expression) {
     return self.tempBase + static_cast<std::int64_t>(expression.stringTemp);
 }
@@ -716,6 +754,10 @@ Interpreter::Flow Interpreter::execute(const Statement& statement, Instance& sel
                     self.values[s.target.directLeaf] = convert(evaluate(*s.value, self), s.target.type->elementary);
                 } else if (s.target.part) {
                     storePart(s.target, evaluate(*s.value, self), self);
+                } else if (s.target.charIndex != nullptr) {
+                    const auto value = evaluate(*s.value, self);
+                    const auto where = place(s.target, self);
+                    storeChar(where, s.target, toInteger(evaluate(*s.target.charIndex, self)), value);
                 } else {
                     const auto value = evaluate(*s.value, self);
                     storeLeaf(place(s.target, self), s.target.type->elementary, value);
@@ -931,6 +973,20 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
             *sp++ = toSlot(extractPart(toInteger(whole), part));
             break;
         }
+        case Op::LoadChar: {
+            const auto index = (--sp)->i;
+            const auto offset = (--sp)->i;
+            const auto& access = *chunk.charAccesses[in.b];
+            *sp++ = toSlot(loadChar(vmPlace(chunk.places[in.a], self, offset), access, index));
+            break;
+        }
+        case Op::StoreChar: {
+            const auto index = (--sp)->i;
+            const auto offset = (--sp)->i;
+            const auto& access = *chunk.charAccesses[in.b];
+            storeChar(vmPlace(chunk.places[in.a], self, offset), access, index, Value{(--sp)->i});
+            break;
+        }
         case Op::StorePart: {
             const auto& part = chunk.parts[in.b];
             const auto offset = (--sp)->i;
@@ -1106,6 +1162,10 @@ Value Interpreter::evaluate(const Expression& expression, Instance& self) {
                               }
                               if (access.part) {
                                   return loadPart(access, self);
+                              }
+                              if (access.charIndex != nullptr) {
+                                  const auto where = place(access, self);
+                                  return loadChar(where, access, toInteger(evaluate(*access.charIndex, self)));
                               }
                               return loadLeaf(place(access, self), access.type->elementary, image_);
                           },

@@ -242,3 +242,13 @@ TEST_CASE("String and character type rules") {
     CHECK(errorOf("PROGRAM T VAR s : STRING[2] := 'abc'; END_VAR END_PROGRAM") ==
           "'abc' is 3 characters, too long for STRING[2]");
 }
+
+TEST_CASE("A string takes one character index") {
+    const auto p = [](const char* body) {
+        return errorOf(std::string("PROGRAM T VAR s : STRING; c : CHAR; r : REAL; END_VAR\n") + body + "\nEND_PROGRAM");
+    };
+    CHECK(p("c := s[1, 2];") == "a STRING takes one index, not 2");
+    CHECK(p("c := s[r];") == "a character index must be an integer, not REAL");
+    CHECK(p("c := s[1].x;") == "'s[...]' is CHAR, not a struct, so it has no field 'x'");
+    CHECK(p("c := s[1];").empty());
+}
