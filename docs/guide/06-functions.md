@@ -109,7 +109,7 @@ END_PROGRAM
 
 | Function | What it does |
 |---|---|
-Every `<FROM>_TO_<TO>` between the integers, the bit strings and BOOL exists, and between the integers and REAL. Between REAL and the bit strings there are only `DWORD_TO_REAL` and `REAL_TO_DWORD` (see below), and BOOL doesn't convert to or from REAL: go through an integer, as in `UINT_TO_REAL(WORD_TO_UINT(w))`. TIME only converts to and from DINT.
+Every `<FROM>_TO_<TO>` between the integers, the bit strings and BOOL exists, and between the integers and REAL. For STRING, WSTRING, CHAR and WCHAR, see [Text](#text). Between REAL and the bit strings there are only `DWORD_TO_REAL` and `REAL_TO_DWORD` (see below), and BOOL doesn't convert to or from REAL: go through an integer, as in `UINT_TO_REAL(WORD_TO_UINT(w))`. TIME only converts to and from DINT.
 
 | Function | What it does |
 |---|---|
@@ -134,6 +134,41 @@ END_PROGRAM
 ```
 
 The rounding of `ROUND` and `REAL_TO_INT` (halves to the even number) is IEEE 754's default rounding. Check your CPU's documentation before relying on how a real PLC rounds exact halves.
+
+### Text
+
+Positions count from 1, as everywhere in IEC 61131-3. The inputs are named as shown.
+
+| Function | Gives | |
+|---|---|---|
+| `LEN(IN)` | the number of characters, an INT | `LEN('hello')` is 5 |
+| `LEFT(IN, L)`, `RIGHT(IN, L)` | the first / last L characters | `LEFT('hello', 2)` is `'he'` |
+| `MID(IN, L, P)` | L characters from position P | `MID('hello', 3, 2)` is `'ell'` |
+| `CONCAT(IN1, IN2, …)` | the texts one after the other; two or more inputs | `CONCAT('a', 'b', 'c')` is `'abc'` |
+| `INSERT(IN1, IN2, P)` | IN2 put into IN1 after position P (0: at the start) | `INSERT('helo', 'l', 3)` is `'hello'` |
+| `DELETE(IN, L, P)` | IN without L characters from position P | `DELETE('hello', 2, 2)` is `'hlo'` |
+| `REPLACE(IN1, IN2, L, P)` | L characters from position P of IN1 replaced by IN2 | `REPLACE('hello', 'J', 1, 1)` is `'Jello'` |
+| `FIND(IN1, IN2)` | where IN2 first appears in IN1, or 0 | `FIND('hello', 'll')` is 3 |
+
+They work on STRINGs and on WSTRINGs, but not on a mix of the two. A result longer than where it's stored is cut to fit. A position or length outside the text, like `MID('hello', 3, 4)` or a negative L, **stops the PLC** with the line and column, like an array index out of range: it's almost always a mistake in the program, and better found than hidden.
+
+Conversions turn values into text and back: `INT_TO_STRING(-5)` is `'-5'`, `WORD_TO_STRING(WORD#255)` is `'16#00FF'`, `TIME_TO_STRING(T#1500ms)` is `'T#1s500ms'`: the same text the monitor shows. `STRING_TO_INT('42')` is 42, and a text that isn't a value of the type, like `STRING_TO_INT('x')`, stops the PLC. Also `STRING_TO_WSTRING` and back (a character a STRING can't hold becomes `?`), `CHAR_TO_STRING`, `STRING_TO_CHAR` (the first character), and `CHAR` with `BYTE` and `USINT`, `WCHAR` with `WORD` and `UINT`.
+
+```st
+PROGRAM Messages
+VAR
+    station : INT := 3;
+    level : REAL := 72.5;
+    message : STRING[40];
+    code : STRING := 'E042: overheat';
+    number : INT;
+END_VAR
+    message := CONCAT('Station ', INT_TO_STRING(station), ': ', REAL_TO_STRING(level), ' %');
+    IF LEFT(code, 1) = 'E' THEN
+        number := STRING_TO_INT(MID(code, 3, 2));   (* 42 *)
+    END_IF;
+END_PROGRAM
+```
 
 ### Bits
 

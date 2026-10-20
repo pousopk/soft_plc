@@ -118,7 +118,7 @@ For an optimized build without sanitizers: `cmake -S . -B build-release -DCMAKE_
 
 - **Scan cycle engine:** read inputs → run program → write outputs, fixed cycle time, watchdog, cycle statistics.
 - **Memory model:** `%I`, `%Q`, `%M` areas and data blocks with bit, byte and word access.
-- **Data types:** BOOL, SINT, USINT, INT, UINT, DINT, UDINT, LINT, BYTE, WORD, DWORD, REAL, TIME, arrays and structs (STRING is not supported yet).
+- **Data types:** BOOL, SINT, USINT, INT, UINT, DINT, UDINT, LINT, BYTE, WORD, DWORD, REAL, TIME, STRING, WSTRING, CHAR, WCHAR, arrays and structs.
 - **Structured Text:** lexer → parser → AST → type checking → tree-walking interpreter or bytecode compiler + VM.
 - **Standard library:** TON, TOF, TP, CTU, CTD, R_TRIG, F_TRIG, SR, RS; standard functions (ABS, SQRT, MIN, MAX, LIMIT, SEL, MUX, ROUND, SHL, SHR, ROL, ROR, conversions, …).
 - **Online monitoring:** watch and force variables while running.

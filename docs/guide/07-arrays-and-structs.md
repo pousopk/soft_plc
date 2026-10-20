@@ -77,6 +77,20 @@ END_PROGRAM
 - A field can be of any type except a function block: elementary, an array, another struct.
 - A struct can't contain itself, directly or through another struct.
 
+Arrays and structs can hold strings too, each with its own length:
+
+```st
+PROGRAM Recipes
+VAR
+    names : ARRAY[1..3] OF STRING[16] := ['bread', 'cake', 'pizza'];
+    chosen : INT := 2;
+    current, big : STRING[16];
+END_VAR
+    current := names[chosen];          (* 'cake' *)
+    big := CONCAT(names[3], ' XL');    (* 'pizza XL' *)
+END_PROGRAM
+```
+
 ## Naming types: TYPE
 
 A `TYPE` block can also give a name to an array type, which is handy when the same array appears in several places:

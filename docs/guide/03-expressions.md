@@ -11,8 +11,8 @@ Tightest first (higher in the table = done first):
 | `**` | power | numbers; the result is always REAL |
 | `*`, `/`, `MOD` | multiply, divide, remainder | numbers (`MOD`: integers only) |
 | `+`, `-` | add, subtract | numbers, TIME |
-| `<`, `>`, `<=`, `>=` | compare | numbers, TIME, bit strings |
-| `=`, `<>` | equal, not equal | numbers, TIME, BOOL, bit strings |
+| `<`, `>`, `<=`, `>=` | compare | numbers, TIME, bit strings, texts |
+| `=`, `<>` | equal, not equal | numbers, TIME, BOOL, bit strings, texts |
 | `AND`, `&` | and | BOOL; bit strings, bit by bit |
 | `XOR` | exclusive or | BOOL; bit strings, bit by bit |
 | `OR` | or | BOOL; bit strings, bit by bit |
@@ -76,6 +76,18 @@ END_PROGRAM
 ```
 
 The shifts `SHL`, `SHR`, `ROL` and `ROR` are standard functions ([chapter 6](06-functions.md#bits)).
+
+## Texts
+
+STRINGs compare character by character, by their codes: `'abc' < 'abd'`, and a text that is the start of another comes first (`'ab' < 'abc'`). The lengths of the variables don't matter, only the texts. A STRING compares only with a STRING, a WSTRING with a WSTRING, and the same for CHAR and WCHAR; `'a'` works as a CHAR. There's no `+` for texts: join them with `CONCAT` ([chapter 6](06-functions.md#text)).
+
+```st
+(* error: '+' needs numbers, but got STRING and STRING *)
+PROGRAM NoPlus
+VAR greeting : STRING := 'Hello'; END_VAR
+    greeting := greeting + ' World';
+END_PROGRAM
+```
 
 ## REAL precision
 

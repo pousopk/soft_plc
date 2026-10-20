@@ -27,8 +27,9 @@ Data blocks don't need to be declared: every DB used with `AT` is created when t
 An array or struct placed with `AT` follows Siemens' rules for standard access:
 
 - A **BOOL** takes the next free bit. Consecutive BOOLs share a byte.
-- **SINT, USINT and BYTE** start at the next byte.
-- **INT, UINT, WORD, DINT, UDINT, DWORD, LINT, REAL and TIME** start at the next **even** byte. A LINT takes 8 bytes, most significant first.
+- **SINT, USINT, BYTE and CHAR** start at the next byte.
+- **INT, UINT, WORD, WCHAR, DINT, UDINT, DWORD, LINT, REAL and TIME** start at the next **even** byte. A LINT takes 8 bytes, most significant first.
+- A **STRING[n]** starts at an even byte and takes n + 2 bytes: the maximum length n, the current length, then the characters. A **WSTRING[n]** takes 2n + 4 bytes: the same, in words. In an array, each string starts at an even byte. soft_plc writes the maximum length when the PLC starts, so S7 clients and HMIs know how much room there is; a current length bigger than the maximum (written by a client, say) is read as the maximum.
 - A **struct** starts at an even byte and its size is rounded up to an even number of bytes.
 - An **array** starts at an even byte; its elements follow each other with no gaps, and its size is rounded up to an even number of bytes. In an `ARRAY OF BOOL`, the elements are packed bit after bit.
 - In a multi-dimensional array, the **last** index changes fastest: `[1,1]`, `[1,2]`, … `[2,1]`.
@@ -101,7 +102,7 @@ or type the requests yourself, one per line (`nc 127.0.0.1 5020`):
 | `LOAD <program>` | `OK kept=12 initialized=1 tens` | a new version of the program, see below |
 | `SOURCE` | `OK PROGRAM Main\nVAR\n…` | the running program, escaped as for `LOAD`; `ladder_editor`'s **Upload** uses it |
 
-Paths are case-insensitive: `fast.offTimer.ET`, `cameras[2].score`, `grid[1,3]`. Values are written as in a program: `TRUE`, `-5`, `16#FF`, `WORD#16#00FF`, `2.5`, `T#2s`. BYTE, WORD and DWORD values are shown in hexadecimal, padded to their width: `16#00FF`.
+Paths are case-insensitive: `fast.offTimer.ET`, `cameras[2].score`, `grid[1,3]`. Values are written as in a program: `TRUE`, `-5`, `16#FF`, `WORD#16#00FF`, `2.5`, `T#2s`, `'Hello World'`. BYTE, WORD and DWORD values are shown in hexadecimal, padded to their width: `16#00FF`. Texts are shown as literals, in quotes, with `$` escapes (`'it$'s'`), and with characters beyond plain ASCII as `$hh` (`'caf$E9'`), so a reply is always plain ASCII. A quoted text is one word, spaces and all: `WRITE msg 'Hello World'`, and `READ msg count` answers `OK 'Hello World' 42`. A forced text survives a change of the program, like any force.
 
 A forced variable is written just before the program runs (so the program reads the forced value) and again just after (so the program's own writes don't reach the outputs). Forcing an input is the usual way to test a program without hardware.
 

@@ -17,8 +17,14 @@
 | `DWORD` | 32 bits | `16#0000_0000` … `16#FFFF_FFFF` | 32 bits |
 | `REAL` | numbers with decimals | about ±3.4 × 10³⁸, 7 significant digits | 32 bits |
 | `TIME` | a duration | about ±24.8 days, in milliseconds | 32 bits |
+| `STRING[n]` | text, at most n characters of 1 byte | n from 1 to 254; `STRING` alone is `STRING[254]` | n + 2 bytes |
+| `WSTRING[n]` | text, at most n characters of 2 bytes | n from 1 to 16 382; `WSTRING` alone is `WSTRING[254]` | 2n + 4 bytes |
+| `CHAR` | one 1-byte character | codes 0 … 255 | 8 bits |
+| `WCHAR` | one 2-byte character | codes 0 … 65 535 | 16 bits |
 
 These are the same sizes as on a Siemens S7. There are also arrays and structs, built from these ([chapter 7](07-arrays-and-structs.md)).
+
+Strings have a fixed size, like on a real PLC: a `STRING[20]` always takes 22 bytes, whatever it holds. A text that doesn't fit is cut to the length (see [Text](06-functions.md#text) for the string functions). A STRING's characters are bytes (Latin-1, so `'é'` is one character); a WSTRING's are 2 bytes each.
 
 `BYTE`, `WORD` and `DWORD` are **bit strings**: a row of bits, like 16 input signals in one word or a status word from a drive, not a number. You combine them with `AND`, `OR`, `XOR` and `NOT`, shift them, and pick out single bits ([chapter 3](03-expressions.md#bit-strings)), but you can't add or multiply them. To do arithmetic on one, convert it to an integer first.
 
@@ -30,7 +36,11 @@ These are the same sizes as on a Siemens S7. There are also arrays and structs, 
 | integers | `42`, `-7`, `1_000_000` (underscores are ignored), `16#FF` (hex), `2#1010_0101` (binary), `8#17` (octal) |
 | REAL | `3.14`, `-0.5`, `1.5E3`, `2.0E-6`. A REAL always has a decimal point: `1.0`, not `1.` or `.5` |
 | TIME | `T#500ms`, `T#2s`, `T#1m30s`, `T#1h`, `T#1d2h`, also `TIME#5s`. Units: `d`, `h`, `m`, `s`, `ms` (biggest first) |
-| any type, written out | `INT#5`, `UINT#65535`, `LINT#-5`, `WORD#16#FF00`, `BYTE#2#1010_0101`, `REAL#2`, `BOOL#1` |
+| STRING, CHAR | `'Hello'`, `''` (empty), `'a'` |
+| WSTRING, WCHAR | `"Hello"`, `"$20AC"` (€) |
+| any type, written out | `INT#5`, `UINT#65535`, `LINT#-5`, `WORD#16#FF00`, `BYTE#2#1010_0101`, `REAL#2`, `BOOL#1`, `STRING#'a'`, `CHAR#'a'`, `WCHAR#"a"` |
+
+In a string, `$` starts an escape: `$'` is a quote in single quotes, `$"` one in double quotes, `$$` a dollar sign, `$N` or `$L` a new line, `$R` a carriage return, `$T` a tab, `$P` a form feed, and `$hh` a character by its hex code (`$41` is `A`); in a WSTRING, `$hhhh` (`$20AC` is €). A one-character string like `'a'` is also a CHAR where one is expected.
 
 An integer literal like `42` has no fixed type: it becomes whatever integer, bit string or REAL it's used with. But it must fit: `x := 40000;` is an error when `x` is an INT, and so is `b := 256;` when `b` is a BYTE.
 
@@ -55,6 +65,32 @@ END_PROGRAM
 - Initial values must be **constants**: `a : INT := b;` is an error. A calculation of constants is fine: `a : INT := 60 * 60;`.
 - The initial value is set **once**, when the PLC starts. After that, the variable keeps whatever the program last wrote, cycle after cycle.
 
+A string variable copies the text it's given, and a text too long is cut to its length:
+
+```st
+PROGRAM Texts
+VAR
+    name : STRING[10] := 'pump';
+    copy, numbered : STRING;
+    label : STRING[4];
+    last : CHAR;
+    euro : WSTRING := "$20AC 5";
+END_VAR
+    copy := name;                     (* 'pump': its own copy of the text *)
+    numbered := CONCAT(name, ' 2');   (* 'pump 2'; name stays 'pump' *)
+    label := numbered;                (* 'pump': cut to 4 *)
+    last := numbered[6];              (* '2': characters count from 1 *)
+END_PROGRAM
+```
+
+```st
+(* error: 'too long' is 8 characters, too long for STRING[4] *)
+PROGRAM TooLong
+VAR label : STRING[4]; END_VAR
+    label := 'too long';
+END_PROGRAM
+```
+
 ## Converting between types
 
 soft_plc only converts **automatically when nothing can be lost**:
@@ -69,6 +105,7 @@ soft_plc only converts **automatically when nothing can be lost**:
 | bit strings ↔ integers | **no**: a WORD is bits, not a number (see below) |
 | BOOL ↔ numbers | **no** |
 | TIME ↔ numbers | **no**: write times as `T#…` |
+| STRING ↔ WSTRING, CHAR ↔ WCHAR, texts ↔ anything else | **no**: use a conversion like `STRING_TO_WSTRING` or `INT_TO_STRING` |
 
 When two different integers meet in a calculation, both become the smallest type that holds all values of both: INT with UINT gives DINT, DINT with UDINT gives LINT.
 
@@ -127,7 +164,7 @@ END_VAR
 END_PROGRAM
 ```
 
-The size of the address must match the type: a bit (`X`) for BOOL, a byte (`B`) for SINT, USINT and BYTE, a word (`W`) for INT, UINT and WORD, a double word (`D`) for DINT, UDINT, DWORD, REAL and TIME. A LINT has no address of its size, so it can't be placed with `AT` on its own; put it in a struct in a data block instead. Arrays and structs take a byte address (`%MB10`, `%DB1.DBB0`), see [chapter 7](07-arrays-and-structs.md). [Chapter 8](08-memory-s7-and-online.md) explains the memory areas.
+The size of the address must match the type: a bit (`X`) for BOOL, a byte (`B`) for SINT, USINT and BYTE, a word (`W`) for INT, UINT and WORD, a double word (`D`) for DINT, UDINT, DWORD, REAL and TIME. A LINT has no address of its size, so it can't be placed with `AT` on its own; put it in a struct in a data block instead. CHAR takes a byte and WCHAR a word. Arrays, structs and strings take a byte address at an even byte (`%MB10`, `%DB1.DBB0`), see [chapter 7](07-arrays-and-structs.md) and, for the layout of a string, [chapter 8](08-memory-s7-and-online.md#arrays-and-structs-the-s7-layout). [Chapter 8](08-memory-s7-and-online.md) explains the memory areas.
 
 - `AT` is only allowed in the PROGRAM, not inside function blocks.
 - An `AT` variable can't have an initial value: its value comes from the memory.

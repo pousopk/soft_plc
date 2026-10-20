@@ -29,8 +29,8 @@ soft_plc's Structured Text is IEC 61131-3, and SCL in TIA Portal is Siemens' ver
 ## Not there yet
 
 - **Functions without a return value** (`FUNCTION F : VOID`), `VAR_OUTPUT` and `VAR_IN_OUT` in functions, and functions that return arrays or structs.
-- **More standard functions:** `NORM_X`, `SCALE_X`, `MOVE_BLK`, `FILL_BLK`, the string functions, and Siemens' generic `CONVERT`.
-- **Types:** `ULINT`, `LWORD`, `LREAL`, `STRING`, `CHAR`, `DATE`, `TIME_OF_DAY`, `DTL`, enums.
+- **More standard functions:** `NORM_X`, `SCALE_X`, `MOVE_BLK`, `FILL_BLK`, Siemens' own string functions (`S_CONV`, `STRG_VAL`, `VAL_STRG`, `Strg_TO_Chars`, ...), and Siemens' generic `CONVERT`.
+- **Types:** `ULINT`, `LWORD`, `LREAL`, `DATE`, `TIME_OF_DAY`, `DTL`, enums.
 - **Variable sections:** `VAR_IN_OUT`, `VAR_TEMP`, `VAR CONSTANT`, retentive variables. All variables keep their values between cycles (like static variables in an FB).
 - **Statements:** `CONTINUE`, `GOTO`, `REGION`.
 - **Arrays of FB instances** (`ARRAY[1..4] OF TON`) and FB instances inside structs.
@@ -44,6 +44,7 @@ soft_plc's Structured Text is IEC 61131-3, and SCL in TIA Portal is Siemens' ver
 - **Bit strings and integers don't mix**, as in TIA Portal with *IEC check* on: `myInt := myWord` needs `WORD_TO_INT`, and a WORD can't be added to. With IEC check off, TIA Portal converts these on its own.
 - **Integers to REAL:** any integer converts to REAL on its own, also DINT, UDINT and LINT, which can lose precision there (a REAL has 7 digits). Strict IEC only allows the conversions that can't.
 - **Bits of a variable** (`myWord.%X3`) need a constant number, as in TIA Portal. `.%D` isn't supported.
+- **Strings:** a text too long for its variable is cut to fit, as on an S7. A position or length outside a text in `MID`, `LEFT`, `s[i]` and the like stops the PLC (IEC calls it an error; TIA Portal sets `ENO` or the like). There's no `+` for texts: use `CONCAT`, as IEC wants. `STRING_TO_INT` and the other conversions from text stop the PLC on a text that isn't a value.
 - **Narrowing conversions:** `DINT_TO_INT` keeps the low 16 bits and `REAL_TO_INT` limits to the INT range. TIA Portal's conversions set `ENO` to FALSE when a value doesn't fit; soft_plc has no `ENO`.
 - **Calls in order** must give every input; calls by name may leave inputs out (they get their default).
 - **Compile errors** are reported one at a time: the first error stops compilation.

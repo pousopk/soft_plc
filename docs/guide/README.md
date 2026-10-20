@@ -7,7 +7,7 @@ If you know SCL, most of it will look familiar; [chapter 9](09-coming-from-tia-p
 | # | Chapter | |
 |---|---|---|
 | 1 | [Your first program](01-first-program.md) | the shape of a program, running it, the scan cycle |
-| 2 | [Data types and variables](02-data-types-and-variables.md) | BOOL, the integers, BYTE/WORD/DWORD, REAL, TIME, literals, conversions, initial values, `AT` |
+| 2 | [Data types and variables](02-data-types-and-variables.md) | BOOL, the integers, BYTE/WORD/DWORD, REAL, TIME, STRING/WSTRING/CHAR/WCHAR, literals, conversions, initial values, `AT` |
 | 3 | [Expressions](03-expressions.md) | operators, precedence, overflow, REAL precision, TIME arithmetic |
 | 4 | [Statements](04-statements.md) | `IF`, `CASE`, `FOR`, `WHILE`, `REPEAT`, `EXIT`, `RETURN`, the watchdog |
 | 5 | [Function blocks](05-function-blocks.md) | writing and calling FBs; TON, TOF, TP, CTU, CTD, R_TRIG, F_TRIG, SR, RS |
