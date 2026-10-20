@@ -168,6 +168,9 @@ private:
     static Place wholeVariable(Instance& instance, std::size_t slot);
     Value loadLeaf(const Place& place, DataType type, const ProcessImage* image) const;
     void storeLeaf(const Place& place, DataType type, const Value& value);
+    // myWord.%X3 and the like: the whole leaf is read, and written back with the part changed.
+    Value loadPart(const Access& access, Instance& self);
+    void storePart(const Access& access, const Value& value, Instance& self);
     void copyAggregate(const Place& from, const Place& to, const Type& type);
 
     void countLoopIteration(SourceLocation where);

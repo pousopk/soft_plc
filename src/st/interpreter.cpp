@@ -515,6 +515,18 @@ void Interpreter::storeLeaf(const Place& place, DataType type, const Value& valu
     image_->write(address, raw);
 }
 
+Value Interpreter::loadPart(const Access& access, Instance& self) {
+    const auto whole = loadLeaf(place(access, self), access.part->whole, image_);
+    return extractPart(toInteger(whole), *access.part);
+}
+
+void Interpreter::storePart(const Access& access, const Value& value, Instance& self) {
+    const auto where = place(access, self);
+    const auto& part = *access.part;
+    const auto whole = toInteger(loadLeaf(where, part.whole, image_));
+    storeLeaf(where, part.whole, insertPart(whole, part, convert(value, access.type->elementary)));
+}
+
 // A whole array or struct, leaf by leaf (the analyzer checked both sides
 // have the same type).
 void Interpreter::copyAggregate(const Place& from, const Place& to, const Type& type) {
@@ -548,12 +560,7 @@ Interpreter::Flow Interpreter::execute(const Statement& statement, Instance& sel
                 } else if (s.target.directLeaf != kNoSlot) {
                     self.values[s.target.directLeaf] = convert(evaluate(*s.value, self), s.target.type->elementary);
                 } else if (s.target.part) {
-                    // A bit, byte or word: read the whole value, change the part, write it back.
-                    const auto value = evaluate(*s.value, self);
-                    const auto where = place(s.target, self);
-                    const auto& part = *s.target.part;
-                    const auto whole = toInteger(loadLeaf(where, part.whole, image_));
-                    storeLeaf(where, part.whole, insertPart(whole, part, convert(value, s.target.type->elementary)));
+                    storePart(s.target, evaluate(*s.value, self), self);
                 } else {
                     const auto value = evaluate(*s.value, self);
                     storeLeaf(place(s.target, self), s.target.type->elementary, value);
@@ -921,8 +928,7 @@ Value Interpreter::evaluate(const Expression& expression, Instance& self) {
                                   return owner.values[access.directLeaf];
                               }
                               if (access.part) {
-                                  const auto whole = loadLeaf(place(access, self), access.part->whole, image_);
-                                  return extractPart(toInteger(whole), *access.part);
+                                  return loadPart(access, self);
                               }
                               return loadLeaf(place(access, self), access.type->elementary, image_);
                           },
@@ -1018,19 +1024,17 @@ Value Interpreter::evaluateBinary(const BinaryExpression& binary, const Expressi
         return compare(binary.op, toInteger(left), toInteger(right));
     }
 
-    if (type != DataType::Bool) {
-        // Bit strings, bit by bit (a BOOL among them counts as 0 or 1).
-        switch (binary.op) {
-        case BinaryOperator::And: return toInteger(left) & toInteger(right);
-        case BinaryOperator::Or: return toInteger(left) | toInteger(right);
-        case BinaryOperator::Xor: return toInteger(left) ^ toInteger(right);
-        default: break;
-        }
-    }
+    // AND, OR and XOR: on BOOLs, or bit by bit on bit strings (where a BOOL counts as 0 or 1).
     switch (binary.op) {
-    case BinaryOperator::And: return std::get<bool>(left) && std::get<bool>(right);
-    case BinaryOperator::Or: return std::get<bool>(left) || std::get<bool>(right);
-    case BinaryOperator::Xor: return std::get<bool>(left) != std::get<bool>(right);
+    case BinaryOperator::And:
+        if (type == DataType::Bool) return std::get<bool>(left) && std::get<bool>(right);
+        return toInteger(left) & toInteger(right);
+    case BinaryOperator::Or:
+        if (type == DataType::Bool) return std::get<bool>(left) || std::get<bool>(right);
+        return toInteger(left) | toInteger(right);
+    case BinaryOperator::Xor:
+        if (type == DataType::Bool) return std::get<bool>(left) != std::get<bool>(right);
+        return toInteger(left) ^ toInteger(right);
     case BinaryOperator::Power: return roundToReal(std::pow(toReal(left), toReal(right)));
     default: break;
     }
