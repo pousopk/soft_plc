@@ -4,6 +4,7 @@
 #include "support/engine.hpp"
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <string>
 
 using namespace softplc;
@@ -236,4 +237,47 @@ TEST_CASE("The watchdog counts per cycle, not in total") {
 TEST_CASE("FOR with BY 0 is a runtime error") {
     Runner runner("PROGRAM P VAR i, s : INT; END_VAR FOR i := 1 TO 5 BY s DO END_FOR; END_PROGRAM");
     CHECK_THROWS_WITH_AS(runner.cycles(1), doctest::Contains("BY 0"), RuntimeError);
+}
+
+TEST_CASE("The new integer types wrap like an S7") {
+    Runner r("PROGRAM T VAR us : USINT := 255; ui : UINT; si : SINT := 127; ud : UDINT := 4000000000; "
+             "li : LINT := 9223372036854775807; q : UDINT; END_VAR\n"
+             "us := us + 1; ui := ui - 1; si := si + 1; q := ud / 3; li := li + 1;\nEND_PROGRAM");
+    r.cycles(1);
+    CHECK(r.integer("us") == 0);
+    CHECK(r.integer("ui") == 65535);
+    CHECK(r.integer("si") == -128);
+    CHECK(r.integer("q") == 1333333333);
+    CHECK(r.integer("li") == std::numeric_limits<std::int64_t>::min());
+}
+
+TEST_CASE("Unsigned values compare and divide as unsigned numbers") {
+    Runner r("PROGRAM T VAR ud : UDINT := 4000000000; d : DINT := -1; big, neg : BOOL; q : LINT; END_VAR\n"
+             "big := ud > 3000000000; neg := d < ud; q := ud / d;\nEND_PROGRAM");
+    r.cycles(1);
+    CHECK(r.boolean("big"));
+    CHECK(r.boolean("neg"));
+    CHECK(r.integer("q") == -4000000000);
+}
+
+TEST_CASE("Bitwise operations on bit strings, masked to the width") {
+    Runner r("PROGRAM T VAR b : BYTE; w : WORD := 16#00FF; m : WORD; f : BOOL := TRUE; c : BOOL; END_VAR\n"
+             "b := NOT b; m := NOT w; w := w AND 16#0F0F; w := w OR f; w := w XOR 16#1000; c := m > w;\nEND_PROGRAM");
+    r.cycles(1);
+    CHECK(r.integer("b") == 255);
+    CHECK(r.integer("m") == 0xFF00);
+    CHECK(r.integer("w") == 0x100F);
+    CHECK(r.boolean("c"));
+}
+
+TEST_CASE("Unsigned and byte-sized AT variables read and write the process image") {
+    Runner r("PROGRAM T VAR u AT %MW0 : UINT; s AT %MB2 : SINT; d AT %MD4 : DWORD; "
+             "copy : UINT; sc : SINT; END_VAR\n"
+             "copy := u; sc := s; d := 16#DEADBEEF;\nEND_PROGRAM");
+    r.image().writeWord(Area::Marker, 0, 0xFFFF);
+    r.image().writeByte(Area::Marker, 2, 0x80);
+    r.cycles(1);
+    CHECK(r.integer("copy") == 65535);
+    CHECK(r.integer("sc") == -128);
+    CHECK(r.image().readDWord(Area::Marker, 4) == 0xDEADBEEF);
 }

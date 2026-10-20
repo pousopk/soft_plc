@@ -16,8 +16,9 @@ int stackEffect(Op op) {
     case Op::LoadMemberBool: case Op::LoadMemberInt: case Op::LoadMemberReal:
     case Op::LoadTemp:
         return +1;
-    case Op::StoreBool: case Op::StoreInt16: case Op::StoreInt32: case Op::StoreReal:
+    case Op::StoreBool: case Op::StoreInt16: case Op::StoreInt32: case Op::StoreReal: case Op::StoreWrapped:
     case Op::StoreMemberBool: case Op::StoreMemberInt16: case Op::StoreMemberInt32: case Op::StoreMemberReal:
+    case Op::StoreMemberWrapped:
     case Op::StoreTemp:
     case Op::AddI: case Op::SubI: case Op::MulI: case Op::DivI: case Op::ModI:
     case Op::AddR: case Op::SubR: case Op::MulR: case Op::DivR: case Op::PowR:
@@ -25,12 +26,13 @@ int stackEffect(Op op) {
     case Op::EqR: case Op::NeR: case Op::LtR: case Op::LeR: case Op::GtR: case Op::GeR:
     case Op::EqB: case Op::NeB:
     case Op::And: case Op::Or: case Op::Xor:
+    case Op::AndBits: case Op::OrBits: case Op::XorBits:
     case Op::JumpIfFalse: case Op::JumpIfTrue:
         return -1;
     case Op::StorePlace: case Op::CopyPlace:
         return -2;
     default:
-        return 0; // NegI, NegR, Wrap*, IntToReal, Not, Jump, LoopTick, ForTest, CheckStep, Call, Return,
+        return 0; // NegI, NegR, Wrap*, IntToReal, Not, NotBits, Jump, LoopTick, ForTest, CheckStep, Call, Return,
                   // Index, LoadPlace
     }
 }
@@ -73,7 +75,9 @@ private:
             emit(Op::Wrap16, where);
         } else if (type == DataType::DInt || type == DataType::Time) {
             emit(Op::Wrap32, where);
-        } // AnyInt: plain 64-bit arithmetic on literals, no wrapping
+        } else if (type != DataType::LInt && type != DataType::AnyInt) {
+            emit(Op::WrapTo, where, 0, 0, static_cast<std::int64_t>(type));
+        } // LINT, and AnyInt (literals): plain 64-bit arithmetic, which already wraps
     }
 
     // An integer value where a REAL is needed (e.g. INT + REAL, REAL := INT).
@@ -92,8 +96,11 @@ private:
                        [&](const CallExpression& call) { this->call(call, e.location); },
                        [&](const UnaryExpression& unary) {
                            expression(*unary.operand);
-                           if (unary.op == UnaryOperator::Not) {
+                           if (unary.op == UnaryOperator::Not && e.type == DataType::Bool) {
                                emit(Op::Not, e.location);
+                           } else if (unary.op == UnaryOperator::Not) {
+                               emit(Op::NotBits, e.location); // a bit string
+                               wrapFor(e.type, e.location);
                            } else if (e.type == DataType::Real) {
                                emit(Op::NegR, e.location);
                            } else {
@@ -225,7 +232,12 @@ private:
         if (b.op == BinaryOperator::And || b.op == BinaryOperator::Or || b.op == BinaryOperator::Xor) {
             expression(*b.left);
             expression(*b.right);
-            emit(b.op == BinaryOperator::And ? Op::And : b.op == BinaryOperator::Or ? Op::Or : Op::Xor, where);
+            if (type == DataType::Bool) {
+                emit(b.op == BinaryOperator::And ? Op::And : b.op == BinaryOperator::Or ? Op::Or : Op::Xor, where);
+            } else { // bit strings: a BOOL among them is 0 or 1 on the stack already
+                emit(b.op == BinaryOperator::And ? Op::AndBits : b.op == BinaryOperator::Or ? Op::OrBits : Op::XorBits,
+                     where);
+            }
             return;
         }
 
@@ -283,20 +295,24 @@ private:
             storeMember(access.instanceSlot, leaf, access.type->elementary, where);
             return;
         }
-        switch (access.type->elementary) {
+        const auto type = access.type->elementary;
+        switch (type) {
         case DataType::Bool: emit(Op::StoreBool, where, leaf); break;
         case DataType::Int: emit(Op::StoreInt16, where, leaf); break;
         case DataType::Real: emit(Op::StoreReal, where, leaf); break;
-        default: emit(Op::StoreInt32, where, leaf); break; // DINT, TIME
+        case DataType::DInt:
+        case DataType::Time: emit(Op::StoreInt32, where, leaf); break;
+        default: emit(Op::StoreWrapped, where, leaf, 0, static_cast<std::int64_t>(type)); break;
         }
     }
 
     void storeMember(std::size_t instanceSlot, std::uint32_t leaf, DataType type, SourceLocation where) {
-        const Op op = type == DataType::Bool   ? Op::StoreMemberBool
-                      : type == DataType::Int  ? Op::StoreMemberInt16
-                      : type == DataType::Real ? Op::StoreMemberReal
-                                               : Op::StoreMemberInt32;
-        emit(op, where, slotIndex(instanceSlot), leaf);
+        const Op op = type == DataType::Bool                              ? Op::StoreMemberBool
+                      : type == DataType::Int                             ? Op::StoreMemberInt16
+                      : type == DataType::Real                            ? Op::StoreMemberReal
+                      : type == DataType::DInt || type == DataType::Time ? Op::StoreMemberInt32
+                                                                          : Op::StoreMemberWrapped;
+        emit(op, where, slotIndex(instanceSlot), leaf, static_cast<std::int64_t>(type));
     }
 
     // target := source, for whole arrays and structs.
@@ -498,6 +514,13 @@ const char* opName(Op op) {
     case Op::StoreInt16: return "StoreInt16";
     case Op::StoreInt32: return "StoreInt32";
     case Op::StoreReal: return "StoreReal";
+    case Op::StoreWrapped: return "StoreWrapped";
+    case Op::StoreMemberWrapped: return "StoreMemberWrapped";
+    case Op::WrapTo: return "WrapTo";
+    case Op::AndBits: return "AndBits";
+    case Op::OrBits: return "OrBits";
+    case Op::XorBits: return "XorBits";
+    case Op::NotBits: return "NotBits";
     case Op::LoadMemberBool: return "LoadMemberBool";
     case Op::LoadMemberInt: return "LoadMemberInt";
     case Op::LoadMemberReal: return "LoadMemberReal";
@@ -572,6 +595,13 @@ std::string disassemble(const Chunk& chunk) {
         case Op::ForTest: case Op::CopyPlace:
             operands = fmt::format("{} {}", in.a, in.b);
             break;
+        case Op::StoreMemberWrapped:
+            operands = fmt::format("{} {} {}", in.a, in.b, dataTypeName(static_cast<DataType>(in.imm)));
+            break;
+        case Op::StoreWrapped:
+            operands = fmt::format("{} {}", in.a, dataTypeName(static_cast<DataType>(in.imm)));
+            break;
+        case Op::WrapTo: operands = dataTypeName(static_cast<DataType>(in.imm)); break;
         case Op::LoadBool: case Op::LoadInt: case Op::LoadReal: case Op::StoreBool: case Op::StoreInt16:
         case Op::StoreInt32: case Op::StoreReal: case Op::Index: case Op::LoadPlace: case Op::StorePlace: case Op::LoadTemp:
         case Op::StoreTemp: case Op::Jump: case Op::JumpIfFalse: case Op::JumpIfTrue: case Op::CheckStep:

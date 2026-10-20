@@ -31,10 +31,12 @@ enum class Op : std::uint8_t {
     // Values of the running instance (a = leaf)
     LoadBool, LoadInt, LoadReal,
     StoreBool, StoreInt16, StoreInt32, StoreReal, // pop, convert to the type, store
+    StoreWrapped, // pop, wrap to the type in imm (a DataType: SINT, UINT, WORD, LINT, ...), store
 
     // Inputs and outputs of a child instance (a = instance slot, b = leaf in the child)
     LoadMemberBool, LoadMemberInt, LoadMemberReal,
     StoreMemberBool, StoreMemberInt16, StoreMemberInt32, StoreMemberReal,
+    StoreMemberWrapped, // like StoreWrapped
 
     // Scratch slots for the compiler's own use (CASE selector, FOR bounds), a = index
     LoadTemp, StoreTemp,
@@ -53,6 +55,7 @@ enum class Op : std::uint8_t {
 
     // Integer arithmetic on 64 bits, then wrapped to the type's size
     AddI, SubI, MulI, DivI, ModI, NegI, Wrap16, Wrap32,
+    WrapTo, // wrap to the type in imm, for the types without their own Wrap (SINT, UINT, WORD, ...)
     // REAL arithmetic (rounded to 32-bit float precision)
     AddR, SubR, MulR, DivR, PowR, NegR,
     IntToReal, // convert the top of the stack from integer to REAL
@@ -64,6 +67,8 @@ enum class Op : std::uint8_t {
 
     // Logic
     And, Or, Xor, Not,
+    // Bit strings, bit by bit (NotBits is followed by a WrapTo to the width)
+    AndBits, OrBits, XorBits, NotBits,
 
     // Control flow (a = target instruction index)
     Jump, JumpIfFalse, JumpIfTrue,

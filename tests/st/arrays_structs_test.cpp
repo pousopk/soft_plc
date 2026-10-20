@@ -463,3 +463,17 @@ TEST_CASE("The new types take AT addresses of their size") {
     CHECK(errorOf("PROGRAM P VAR a AT %MW0 : BYTE; END_VAR END_PROGRAM") ==
           "BYTE 'a' needs a byte address like %MB0, not %MW0");
 }
+
+TEST_CASE("A LINT in a data block takes 8 bytes, most significant first") {
+    Runner run("TYPE S : STRUCT flag : BOOL; big : LINT; END_STRUCT; END_TYPE\n"
+               "PROGRAM P VAR s AT %DB1.DBB0 : S; copy : LINT; END_VAR\n"
+               "s.big := -2; copy := s.big;\nEND_PROGRAM");
+    run.cycles(1);
+    const auto block = run.image().dataBlock(1);
+    REQUIRE(block.size() == 10);
+    for (std::size_t i = 2; i < 9; ++i) {
+        CHECK(block[i] == 0xFF);
+    }
+    CHECK(block[9] == 0xFE);
+    CHECK(run.integer("copy") == -2);
+}

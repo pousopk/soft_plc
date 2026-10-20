@@ -62,7 +62,12 @@ Address leafAddress(const VariableDeclaration& variable, std::size_t bit, DataTy
     Address address = start;
     address.byteOffset = (first + bit) / 8;
     address.bit = static_cast<unsigned>((first + bit) % 8);
-    address.size = type == DataType::Bool ? AccessSize::Bit : type == DataType::Int ? AccessSize::Word : AccessSize::DWord;
+    switch (bitWidth(type)) {
+    case 1: address.size = AccessSize::Bit; break;
+    case 8: address.size = AccessSize::Byte; break;
+    case 16: address.size = AccessSize::Word; break;
+    default: address.size = AccessSize::DWord; break; // and LINT: two double words, see loadLeaf
+    }
     return address;
 }
 
@@ -463,16 +468,25 @@ Value Interpreter::loadLeaf(const Place& place, DataType type, const ProcessImag
     }
     // AT variables: the analyzer made sure the address fits the type, and
     // the S7 layout puts every leaf at an address of the right size.
-    const auto raw = image->read(leafAddress(variable, place.bit, type));
+    const auto address = leafAddress(variable, place.bit, type);
+    const auto raw = image->read(address);
     switch (type) {
     case DataType::Bool: return raw != 0;
-    case DataType::Int: return std::int64_t{static_cast<std::int16_t>(raw)};
-    case DataType::DInt:
-    case DataType::Time: return std::int64_t{static_cast<std::int32_t>(raw)};
     case DataType::Real:
         // The 32 bits in memory *are* the float: reinterpret them, don't convert the number.
         return static_cast<double>(std::bit_cast<float>(raw));
-    default: return defaultValue(type);
+    case DataType::LInt: {
+        // 8 bytes, most significant first like everything in S7 memory:
+        // the high double word, then the low one.
+        auto low = address;
+        low.byteOffset += 4;
+        const auto bits = (std::uint64_t{raw} << 32) | image->read(low);
+        return static_cast<std::int64_t>(bits);
+    }
+    default:
+        // Integers, bit strings and TIME: `raw` holds the bits zero-extended,
+        // and wrapping gives signed types their sign back.
+        return wrapInteger(std::int64_t{raw}, type);
     }
 }
 
@@ -483,13 +497,22 @@ void Interpreter::storeLeaf(const Place& place, DataType type, const Value& valu
         place.instance->values[variable.leaf + place.leaf] = converted;
         return;
     }
+    const auto address = leafAddress(variable, place.bit, type);
     std::uint32_t raw = 0;
     switch (type) {
     case DataType::Bool: raw = std::get<bool>(converted) ? 1u : 0u; break;
     case DataType::Real: raw = std::bit_cast<std::uint32_t>(static_cast<float>(std::get<double>(converted))); break;
-    default: raw = static_cast<std::uint32_t>(std::get<std::int64_t>(converted)); break; // INT, DINT, TIME
+    case DataType::LInt: {
+        const auto bits = static_cast<std::uint64_t>(std::get<std::int64_t>(converted));
+        auto low = address;
+        low.byteOffset += 4;
+        image_->write(low, static_cast<std::uint32_t>(bits));
+        raw = static_cast<std::uint32_t>(bits >> 32);
+        break;
     }
-    image_->write(leafAddress(variable, place.bit, type), raw);
+    default: raw = static_cast<std::uint32_t>(std::get<std::int64_t>(converted)); break; // integers, bit strings, TIME
+    }
+    image_->write(address, raw);
 }
 
 // A whole array or struct, leaf by leaf (the analyzer checked both sides
@@ -692,6 +715,7 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
         case Op::StoreInt16: values[in.a] = std::int64_t{static_cast<std::int16_t>((--sp)->i)}; break;
         case Op::StoreInt32: values[in.a] = std::int64_t{static_cast<std::int32_t>((--sp)->i)}; break;
         case Op::StoreReal: values[in.a] = roundToReal((--sp)->r); break;
+        case Op::StoreWrapped: values[in.a] = wrapInteger((--sp)->i, static_cast<DataType>(in.imm)); break;
 
         case Op::LoadMemberBool: (sp++)->i = std::get<bool>(self.children[in.a]->values[in.b]) ? 1 : 0; break;
         case Op::LoadMemberInt: (sp++)->i = std::get<std::int64_t>(self.children[in.a]->values[in.b]); break;
@@ -704,6 +728,9 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
             self.children[in.a]->values[in.b] = std::int64_t{static_cast<std::int32_t>((--sp)->i)};
             break;
         case Op::StoreMemberReal: self.children[in.a]->values[in.b] = roundToReal((--sp)->r); break;
+        case Op::StoreMemberWrapped:
+            self.children[in.a]->values[in.b] = wrapInteger((--sp)->i, static_cast<DataType>(in.imm));
+            break;
 
         case Op::LoadTemp: *sp++ = temps[in.a]; break;
         case Op::StoreTemp: temps[in.a] = *--sp; break;
@@ -753,6 +780,7 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
         case Op::NegI: sp[-1].i = subtract(0, sp[-1].i); break;
         case Op::Wrap16: sp[-1].i = static_cast<std::int16_t>(sp[-1].i); break;
         case Op::Wrap32: sp[-1].i = static_cast<std::int32_t>(sp[-1].i); break;
+        case Op::WrapTo: sp[-1].i = wrapInteger(sp[-1].i, static_cast<DataType>(in.imm)); break;
 
         case Op::AddR: --sp; sp[-1].r = roundToReal(sp[-1].r + sp->r); break;
         case Op::SubR: --sp; sp[-1].r = roundToReal(sp[-1].r - sp->r); break;
@@ -780,6 +808,10 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
         case Op::And: --sp; sp[-1].i = sp[-1].i != 0 && sp->i != 0; break;
         case Op::Or: --sp; sp[-1].i = sp[-1].i != 0 || sp->i != 0; break;
         case Op::Xor: --sp; sp[-1].i = (sp[-1].i != 0) != (sp->i != 0); break;
+        case Op::AndBits: --sp; sp[-1].i &= sp->i; break;
+        case Op::OrBits: --sp; sp[-1].i |= sp->i; break;
+        case Op::XorBits: --sp; sp[-1].i ^= sp->i; break;
+        case Op::NotBits: sp[-1].i = ~sp[-1].i; break;
         case Op::Not: sp[-1].i = sp[-1].i == 0; break;
 
         case Op::Jump: pc = in.a; break;
@@ -874,7 +906,10 @@ Value Interpreter::evaluate(const Expression& expression, Instance& self) {
                           [&](const UnaryExpression& unary) -> Value {
                               const auto operand = evaluate(*unary.operand, self);
                               if (unary.op == UnaryOperator::Not) {
-                                  return !std::get<bool>(operand);
+                                  if (expression.type == DataType::Bool) {
+                                      return !std::get<bool>(operand);
+                                  }
+                                  return wrapInteger(~toInteger(operand), expression.type); // a bit string
                               }
                               if (expression.type == DataType::Real) {
                                   return -toReal(operand);
@@ -956,6 +991,15 @@ Value Interpreter::evaluateBinary(const BinaryExpression& binary, const Expressi
         return compare(binary.op, toInteger(left), toInteger(right));
     }
 
+    if (type != DataType::Bool) {
+        // Bit strings, bit by bit (a BOOL among them counts as 0 or 1).
+        switch (binary.op) {
+        case BinaryOperator::And: return toInteger(left) & toInteger(right);
+        case BinaryOperator::Or: return toInteger(left) | toInteger(right);
+        case BinaryOperator::Xor: return toInteger(left) ^ toInteger(right);
+        default: break;
+        }
+    }
     switch (binary.op) {
     case BinaryOperator::And: return std::get<bool>(left) && std::get<bool>(right);
     case BinaryOperator::Or: return std::get<bool>(left) || std::get<bool>(right);

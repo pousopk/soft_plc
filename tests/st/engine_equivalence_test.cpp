@@ -343,3 +343,34 @@ TEST_CASE("Both engines stop with the same error for a MUX selector out of range
     REQUIRE(error.has_value());
     CHECK(error->find("is outside 0..2 at 2:8") != std::string::npos);
 }
+
+TEST_CASE("Both engines agree on the new integer and bit-string types") {
+    runBothEngines(R"(
+        PROGRAM Bits
+        VAR
+            b0 AT %IB0 : BYTE; k AT %IB1 : USINT; b1 AT %IB1 : BYTE; w AT %IW2 : WORD;
+            s AT %IB0 : SINT; u AT %IW0 : UINT; ud AT %ID0 : UDINT;
+            l : LINT := 7; acc : LINT; d : DINT; q : UINT; m : WORD; n : BYTE; f, g : BOOL; count : USINT;
+            outB AT %QB0 : BYTE; outW AT %QW2 : WORD; mw AT %MW0 : WORD; md AT %MD4 : UDINT; ms AT %MB8 : SINT;
+        END_VAR
+            count := count + 1;
+            l := l * 3 + ud;
+            acc := acc + s * u;
+            IF k <> 0 THEN
+                q := u / k;
+                d := s MOD k;
+            END_IF;
+            m := w AND NOT b0 OR (b1 XOR 16#5A);
+            n := NOT b0;
+            f := w > b0;
+            g := m = w OR f;
+            outB := n XOR b1;
+            outW := m;
+            mw := w OR f;
+            md := ud + count;
+            ms := s - 100;
+            d := d - s;
+            q := q - 1;
+        END_PROGRAM
+    )", 500);
+}
