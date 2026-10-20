@@ -20,15 +20,21 @@ const ImVec4 kGrey{0.6F, 0.6F, 0.6F, 1.0F};
 const ImVec4 kOrange{1.0F, 0.65F, 0.2F, 1.0F};
 
 st::DataType typeFromName(const std::string& name) {
-    if (name == "BOOL") return st::DataType::Bool;
-    if (name == "INT") return st::DataType::Int;
-    if (name == "DINT") return st::DataType::DInt;
-    if (name == "REAL") return st::DataType::Real;
-    if (name == "TIME") return st::DataType::Time;
-    return st::DataType::Unknown;
+    return st::elementaryTypeFromName(name).value_or(st::DataType::Unknown);
 }
 
-// A value as a number for plotting: BOOL as 0/1, TIME in milliseconds.
+// What the edit box shows when empty: an example of a value of the type.
+std::string editHint(const std::string& typeName) {
+    const auto type = typeFromName(typeName);
+    if (type == st::DataType::Time) return "T#2s";
+    if (type == st::DataType::Bool) return "TRUE";
+    if (st::isBitString(type)) return "16#" + std::string(st::bitWidth(type) / 4, '0'); // 16#0000 for a WORD
+    if (st::isIntegerType(type)) return "0";
+    return "value";
+}
+
+// A value as a number for plotting: BOOL as 0/1, TIME in milliseconds, bit
+// strings as unsigned numbers.
 std::optional<double> plottable(const VariableRow& row) {
     const auto value = st::parseValue(row.value, typeFromName(row.type));
     if (!value) {
@@ -163,7 +169,7 @@ void MonitorWindow::drawVariableTable(const Snapshot& snapshot) {
         ImGui::TableNextColumn();
         auto& edit = edits_[row.path];
         ImGui::SetNextItemWidth(-1);
-        ImGui::InputTextWithHint("##edit", row.type == "TIME" ? "T#2s" : row.type == "BOOL" ? "TRUE" : "value", &edit);
+        ImGui::InputTextWithHint("##edit", editHint(row.type).c_str(), &edit);
 
         ImGui::TableNextColumn();
         const bool haveEdit = !edit.empty();

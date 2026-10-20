@@ -78,7 +78,7 @@ std::pair<std::int64_t, std::int64_t> integerRange(DataType type);
 using Value = std::variant<bool, std::int64_t, double>;
 
 std::string formatValue(const Value& value);                // TRUE, 42, 3.5
-std::string formatValue(const Value& value, DataType type); // as above, but TIME as T#1s500ms
+std::string formatValue(const Value& value, DataType type); // as above, but TIME as T#1s500ms, bit strings as 16#00FF
 std::string formatTime(std::int64_t milliseconds);          // T#1m30s
 
 // Marks a reference that the analyzer hasn't resolved yet.

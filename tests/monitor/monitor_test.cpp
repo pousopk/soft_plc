@@ -9,6 +9,7 @@
 #include "support/engine.hpp"
 #include <chrono>
 #include <future>
+#include <limits>
 #include <thread>
 
 using namespace softplc;
@@ -101,6 +102,43 @@ TEST_CASE("parseValue rejects values that don't match the type") {
     CHECK(st::parseValue("500", DataType::Time).error() == "'500' is not a TIME (write it like T#2s or T#500ms)");
     CHECK(st::parseValue("1 2", DataType::Int).error() == "'1 2' is not a single value");
     CHECK_FALSE(st::parseValue("$", DataType::Int).has_value());
+}
+
+TEST_CASE("parseValue reads the new integer types and bit strings, in any base") {
+    using st::DataType;
+    CHECK(std::get<std::int64_t>(st::parseValue("16#FFFF", DataType::Word).value()) == 65535);
+    CHECK(std::get<std::int64_t>(st::parseValue("16#FFFF", DataType::UInt).value()) == 65535);
+    CHECK(std::get<std::int64_t>(st::parseValue("WORD#16#00FF", DataType::Word).value()) == 255);
+    CHECK(std::get<std::int64_t>(st::parseValue("2#1010", DataType::Byte).value()) == 10);
+    CHECK(std::get<std::int64_t>(st::parseValue("SINT#-5", DataType::SInt).value()) == -5);
+    CHECK(std::get<std::int64_t>(st::parseValue("9223372036854775807", DataType::LInt).value()) ==
+          std::numeric_limits<std::int64_t>::max());
+    CHECK(std::get<std::int64_t>(st::parseValue("-9223372036854775808", DataType::LInt).value()) ==
+          std::numeric_limits<std::int64_t>::min());
+    CHECK(st::parseValue("16#FFFF", DataType::Int).error() == "65535 doesn't fit in INT (-32768 to 32767)");
+    CHECK(st::parseValue("-1", DataType::UDInt).error() == "-1 doesn't fit in UDINT (0 to 4294967295)");
+    CHECK(st::parseValue("INT#5", DataType::Word).error() == "'INT#5' is an INT, not a WORD");
+}
+
+TEST_CASE("Bit strings are shown in hexadecimal, padded to their width") {
+    using st::DataType;
+    CHECK(st::formatValue(st::Value{std::int64_t{255}}, DataType::Word) == "16#00FF");
+    CHECK(st::formatValue(st::Value{std::int64_t{15}}, DataType::Byte) == "16#0F");
+    CHECK(st::formatValue(st::Value{std::int64_t{0xBEEF}}, DataType::DWord) == "16#0000BEEF");
+    CHECK(st::formatValue(st::Value{std::int64_t{65535}}, DataType::UInt) == "65535");
+}
+
+TEST_CASE("The monitor lists and writes the new types") {
+    Plc plc;
+    REQUIRE(plc.service.handle("LOAD " + escaped("PROGRAM Main VAR w : WORD := 16#00FF; l : LINT; END_VAR END_PROGRAM"))
+                .rfind("OK", 0) == 0);
+    plc.cycles(1);
+    CHECK(plc.service.handle("LIST").find(" w:WORD") != std::string::npos);
+    CHECK(plc.service.handle("READ w") == "OK 16#00FF");
+    CHECK(plc.service.handle("WRITE w 16#1234") == "OK");
+    CHECK(plc.service.handle("READ w") == "OK 16#1234");
+    CHECK(plc.service.handle("WRITE l 9223372036854775807") == "OK");
+    CHECK(plc.service.handle("READ l") == "OK 9223372036854775807");
 }
 
 // ---------------------------------------------------------------- Variable paths

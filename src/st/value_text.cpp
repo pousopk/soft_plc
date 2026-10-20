@@ -1,6 +1,7 @@
 #include "st/value_text.hpp"
 #include "st/lexer.hpp"
 #include "util/text.hpp"
+#include <charconv>
 #include <fmt/format.h>
 
 namespace softplc::st {
@@ -8,22 +9,33 @@ namespace softplc::st {
 namespace {
 
 // Reuses the Structured Text lexer, so values are written exactly like in a
-// program: an optional minus, then one literal.
-tl::expected<Token, std::string> singleLiteral(std::string_view text, bool& negative) {
+// program: an optional type (WORD#), an optional minus, then one literal.
+tl::expected<Token, std::string> singleLiteral(std::string_view text, bool& negative, DataType& typed) {
     auto tokens = tokenize(text);
     if (!tokens) {
         return tl::unexpected(tokens.error().message);
     }
     std::size_t index = 0;
-    negative = (*tokens)[0].kind == TokenKind::Minus;
+    typed = DataType::Unknown;
+    if ((*tokens)[index].kind == TokenKind::TypePrefix) {
+        typed = elementaryTypeFromName((*tokens)[index].text).value_or(DataType::Unknown);
+        ++index;
+    }
+    negative = (*tokens)[index].kind == TokenKind::Minus;
     if (negative) {
-        index = 1;
+        ++index;
     }
     // Exactly one literal, then the end of input.
     if (tokens->size() != index + 2) {
         return tl::unexpected(fmt::format("'{}' is not a single value", text));
     }
     return (*tokens)[index];
+}
+
+// "a WORD", "an INT".
+std::string withArticle(DataType type) {
+    const std::string name = dataTypeName(type);
+    return (name[0] == 'I' ? "an " : "a ") + name;
 }
 
 } // namespace
@@ -36,27 +48,45 @@ tl::expected<Value, std::string> parseValue(std::string_view text, DataType type
         return tl::unexpected(fmt::format("'{}' is not a BOOL (use TRUE or FALSE)", text));
     }
 
-    bool negative = false;
-    auto token = singleLiteral(text, negative);
-    if (!token) {
-        return tl::unexpected(token.error());
-    }
-
-    switch (type) {
-    case DataType::Int:
-    case DataType::DInt: {
-        if (token->kind != TokenKind::Integer) {
-            return tl::unexpected(fmt::format("'{}' is not an integer", text));
+    if (isIntegerType(type) || isBitString(type)) {
+        // Plain decimals first, so that all of LINT works: the lexer reads
+        // -9223372036854775808 as a minus and a number too big on its own.
+        std::int64_t value = 0;
+        const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+        if (ec != std::errc{} || ptr != text.data() + text.size()) {
+            bool negative = false;
+            auto typed = DataType::Unknown;
+            auto token = singleLiteral(text, negative, typed);
+            if (!token) {
+                return tl::unexpected(token.error());
+            }
+            if (typed != DataType::Unknown && typed != type) {
+                return tl::unexpected(fmt::format("'{}' is {}, not {}", text, withArticle(typed), withArticle(type)));
+            }
+            if (token->kind != TokenKind::Integer) {
+                return tl::unexpected(fmt::format("'{}' is not an integer", text));
+            }
+            value = std::get<std::int64_t>(token->value);
+            value = negative ? -value : value;
         }
-        auto value = std::get<std::int64_t>(token->value);
-        value = negative ? -value : value;
-        const std::int64_t low = type == DataType::Int ? -32768 : -2147483648LL;
-        const std::int64_t high = type == DataType::Int ? 32767 : 2147483647LL;
+        const auto [low, high] = integerRange(type);
         if (value < low || value > high) {
             return tl::unexpected(fmt::format("{} doesn't fit in {} ({} to {})", value, dataTypeName(type), low, high));
         }
         return value;
     }
+
+    bool negative = false;
+    auto typed = DataType::Unknown;
+    auto token = singleLiteral(text, negative, typed);
+    if (!token) {
+        return tl::unexpected(token.error());
+    }
+    if (typed != DataType::Unknown && typed != type) {
+        return tl::unexpected(fmt::format("'{}' is {}, not {}", text, withArticle(typed), withArticle(type)));
+    }
+
+    switch (type) {
     case DataType::Real: {
         double value = 0.0;
         if (token->kind == TokenKind::Real) {

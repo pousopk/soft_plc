@@ -376,6 +376,10 @@ std::string formatValue(const Value& value, DataType type) {
     if (type == DataType::Time) {
         return formatTime(std::get<std::int64_t>(value));
     }
+    if (isBitString(type)) {
+        // Hexadecimal, padded to the width: 16#00FF for a WORD.
+        return fmt::format("16#{:0{}X}", static_cast<std::uint64_t>(std::get<std::int64_t>(value)), bitWidth(type) / 4);
+    }
     return formatValue(value);
 }
 
