@@ -4,6 +4,7 @@
 #include "support/engine.hpp"
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <doctest/doctest.h>
 #include <string>
 
@@ -389,4 +390,50 @@ TEST_CASE("A MUX selector out of range stops the PLC at the call") {
         CHECK(error.location.line == 3);
         CHECK(error.location.column == 8);
     }
+}
+
+TEST_CASE("Conversions between bit strings and integers keep the bits") {
+    CHECK(integerOf("INT", "WORD_TO_INT(16#FFFF)") == -1);
+    CHECK(integerOf("WORD", "INT_TO_WORD(-1)") == 65535);
+    CHECK(integerOf("WORD", "BYTE_TO_WORD(BYTE#16#AB)") == 0xAB);
+    CHECK(integerOf("BYTE", "WORD_TO_BYTE(16#1234)") == 0x34);
+    CHECK(integerOf("UDINT", "DWORD_TO_UDINT(16#FFFFFFFF)") == 4294967295);
+    CHECK(integerOf("USINT", "REAL_TO_USINT(300.0)") == 255);
+    CHECK(integerOf("SINT", "REAL_TO_SINT(-300.0)") == -128);
+    CHECK(integerOf("LINT", "REAL_TO_LINT(1.0E30)") == std::numeric_limits<std::int64_t>::max());
+    CHECK(integerOf("LINT", "REAL_TO_LINT(-1.0E30)") == std::numeric_limits<std::int64_t>::min());
+    CHECK(realOf("UDINT_TO_REAL(UDINT#4000000000)") == doctest::Approx(4.0e9));
+    CHECK(boolOf("WORD_TO_BOOL(WORD#16#0100)"));
+    CHECK(integerOf("BYTE", "BOOL_TO_BYTE(TRUE)") == 1);
+    CHECK(integerOf("LINT", "UINT_TO_LINT(UINT#65535)") == 65535);
+}
+
+TEST_CASE("DWORD_TO_REAL and REAL_TO_DWORD copy the 32 bits unchanged") {
+    CHECK(realOf("DWORD_TO_REAL(16#3F800000)") == 1.0);
+    CHECK(realOf("DWORD_TO_REAL(16#C0490FDB)") == doctest::Approx(-3.14159265));
+    CHECK(integerOf("DWORD", "REAL_TO_DWORD(1.0)") == 0x3F800000);
+    CHECK(integerOf("DWORD", "REAL_TO_DWORD(-2.0)") == 0xC0000000);
+}
+
+TEST_CASE("SHL, SHR, ROL and ROR shift and rotate bit strings") {
+    CHECK(integerOf("BYTE", "SHL(IN := BYTE#16#81, N := 1)") == 0x02);
+    CHECK(integerOf("WORD", "SHR(WORD#16#8000, 15)") == 1);
+    CHECK(integerOf("BYTE", "SHL(BYTE#1, 8)") == 0);
+    CHECK(integerOf("DWORD", "SHR(DWORD#16#FFFFFFFF, 40)") == 0);
+    CHECK(integerOf("BYTE", "ROL(BYTE#16#81, 1)") == 0x03);
+    CHECK(integerOf("BYTE", "ROR(BYTE#16#01, 9)") == 0x80);
+    CHECK(integerOf("WORD", "ROR(WORD#16#00F1, 4)") == 0x100F);
+    CHECK(integerOf("DWORD", "ROL(DWORD#16#80000001, 1)") == 3);
+    CHECK(integerOf("BYTE", "SHL(BYTE#16#81, -1)") == 0x81); // a negative N changes nothing
+}
+
+TEST_CASE("Conversion and shift errors") {
+    const std::string vars = "PROGRAM P VAR i : INT; w : WORD; r : REAL; END_VAR\n";
+    CHECK(errorOf(vars + "w := SHL(i, 1); END_PROGRAM") == "SHL needs a bit string (BYTE, WORD or DWORD) for IN, not INT");
+    CHECK(errorOf(vars + "w := SHL(w, r); END_PROGRAM") == "SHL needs an integer for N, not REAL");
+    CHECK(errorOf(vars + "w := SHL(w); END_PROGRAM") == "SHL needs 2 arguments, not 1");
+    CHECK(errorOf(vars + "w := REAL_TO_WORD(r); END_PROGRAM") ==
+          "'REAL_TO_WORD' is not a function: there's no standard function or FUNCTION with that name");
+    CHECK(errorOf(vars + "i := TIME_TO_INT(T#1s); END_PROGRAM") ==
+          "'TIME_TO_INT' is not a function: there's no standard function or FUNCTION with that name");
 }

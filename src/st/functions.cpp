@@ -3,6 +3,7 @@
 #include "st/runtime_values.hpp"
 #include "util/text.hpp"
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <fmt/format.h>
 #include <limits>
@@ -26,28 +27,68 @@ constexpr NamedFunction kFunctions[] = {
     {"TRUNC", BuiltinFunction::Trunc}, {"ROUND", BuiltinFunction::Round}, {"CEIL", BuiltinFunction::Ceil},
     {"FLOOR", BuiltinFunction::Floor}, {"MIN", BuiltinFunction::Min},     {"MAX", BuiltinFunction::Max},
     {"LIMIT", BuiltinFunction::Limit}, {"SEL", BuiltinFunction::Sel},     {"MUX", BuiltinFunction::Mux},
+    {"SHL", BuiltinFunction::Shl},     {"SHR", BuiltinFunction::Shr},     {"ROL", BuiltinFunction::Rol},
+    {"ROR", BuiltinFunction::Ror},
 };
 
-// The conversions that exist: BOOL_TO_INT, INT_TO_REAL, ... TIME only
-// converts to and from DINT, its milliseconds.
-constexpr std::pair<DataType, DataType> kConversions[] = {
-    {DataType::Bool, DataType::Int},  {DataType::Bool, DataType::DInt}, {DataType::Int, DataType::Bool},
-    {DataType::DInt, DataType::Bool}, {DataType::Int, DataType::DInt},  {DataType::Int, DataType::Real},
-    {DataType::DInt, DataType::Int},  {DataType::DInt, DataType::Real}, {DataType::Real, DataType::Int},
-    {DataType::Real, DataType::DInt}, {DataType::Time, DataType::DInt}, {DataType::DInt, DataType::Time},
-};
+// Whether FROM_TO_TO exists: between any integers and bit strings, integers
+// and REAL, BOOL and integers or bit strings; TIME only to and from DINT
+// (its milliseconds); and DWORD and REAL, which copies the bits.
+bool conversionExists(DataType from, DataType to) {
+    if (from == to) {
+        return false;
+    }
+    const auto bitsOrInteger = [](DataType t) { return isIntegerType(t) || isBitString(t); };
+    if (from == DataType::Time || to == DataType::Time) {
+        return from == DataType::DInt || to == DataType::DInt;
+    }
+    if (from == DataType::Real || to == DataType::Real) {
+        const auto other = from == DataType::Real ? to : from;
+        return isIntegerType(other) || other == DataType::DWord;
+    }
+    if (from == DataType::Bool || to == DataType::Bool) {
+        return bitsOrInteger(from == DataType::Bool ? to : from);
+    }
+    return bitsOrInteger(from) && bitsOrInteger(to);
+}
 
 // A REAL turned into an integer type: the value is clamped to the type's
-// range (there are no bits to wrap), and NaN gives 0.
+// range (there are no bits to wrap), and NaN gives 0. The comparisons are
+// done on doubles first: casting a double too big for an int64 is undefined.
 std::int64_t realToInteger(double value, DataType type) {
     if (std::isnan(value)) {
         return 0;
     }
-    const double low =
-        type == DataType::Int ? std::numeric_limits<std::int16_t>::min() : std::numeric_limits<std::int32_t>::min();
-    const double high =
-        type == DataType::Int ? std::numeric_limits<std::int16_t>::max() : std::numeric_limits<std::int32_t>::max();
-    return static_cast<std::int64_t>(std::clamp(value, low, high));
+    const auto [low, high] = integerRange(type);
+    if (value <= static_cast<double>(low)) {
+        return low;
+    }
+    if (value >= static_cast<double>(high)) {
+        return high;
+    }
+    return static_cast<std::int64_t>(value);
+}
+
+// SHL, SHR, ROL and ROR on a bit string of `type`: shifting by its width or
+// more gives 0, rotating goes round (N MOD width), and a negative N changes nothing.
+std::int64_t shiftBits(BuiltinFunction function, std::int64_t value, std::int64_t n, DataType type) {
+    const auto width = bitWidth(type);
+    const auto in = static_cast<std::uint64_t>(value);
+    if (n <= 0) {
+        return value;
+    }
+    std::uint64_t bits = 0;
+    if (function == BuiltinFunction::Shl || function == BuiltinFunction::Shr) {
+        if (n < width) {
+            bits = function == BuiltinFunction::Shl ? in << n : in >> n;
+        }
+    } else {
+        const auto s = static_cast<unsigned>(n % width);
+        bits = s == 0 ? in
+               : function == BuiltinFunction::Rol ? (in << s) | (in >> (width - s))
+                                                  : (in >> s) | (in << (width - s));
+    }
+    return wrapInteger(static_cast<std::int64_t>(bits), type);
 }
 
 // Round to the nearest whole number, halves to the even one (IEEE 754's
@@ -94,9 +135,14 @@ std::optional<BuiltinSignature> findBuiltinFunction(std::string_view name) {
             return BuiltinSignature{entry.function};
         }
     }
-    for (const auto& [from, to] : kConversions) {
-        if (upper == fmt::format("{}_TO_{}", dataTypeName(from), dataTypeName(to))) {
-            return BuiltinSignature{BuiltinFunction::Convert, from, to};
+    for (const auto from : elementaryTypes()) {
+        for (const auto to : elementaryTypes()) {
+            if (conversionExists(from, to) && upper == fmt::format("{}_TO_{}", dataTypeName(from), dataTypeName(to))) {
+                const auto function = from == DataType::DWord && to == DataType::Real   ? BuiltinFunction::DWordToReal
+                                      : from == DataType::Real && to == DataType::DWord ? BuiltinFunction::RealToDWord
+                                                                                        : BuiltinFunction::Convert;
+                return BuiltinSignature{function, from, to};
+            }
         }
     }
     return std::nullopt;
@@ -110,6 +156,11 @@ std::vector<std::string> builtinInputNames(BuiltinFunction function, std::size_t
         return {"MN", "IN", "MX"};
     case BuiltinFunction::Sel:
         return {"G", "IN0", "IN1"};
+    case BuiltinFunction::Shl:
+    case BuiltinFunction::Shr:
+    case BuiltinFunction::Rol:
+    case BuiltinFunction::Ror:
+        return {"IN", "N"};
     case BuiltinFunction::Min:
     case BuiltinFunction::Max: {
         std::vector<std::string> names;
@@ -218,6 +269,14 @@ Value applyBuiltin(BuiltinFunction function, DataType result, std::span<const Va
             return wrapInteger(toInteger(in), result); // DINT_TO_INT keeps the low 16 bits, like a PLC
         }
     }
+    case BuiltinFunction::DWordToReal:
+        return static_cast<double>(std::bit_cast<float>(static_cast<std::uint32_t>(toInteger(arguments[0]))));
+    case BuiltinFunction::RealToDWord:
+        return std::int64_t{std::bit_cast<std::uint32_t>(static_cast<float>(toReal(arguments[0])))};
+    case BuiltinFunction::Shl:
+    case BuiltinFunction::Shr:
+    case BuiltinFunction::Rol:
+    case BuiltinFunction::Ror: return shiftBits(function, toInteger(arguments[0]), toInteger(arguments[1]), result);
     case BuiltinFunction::None:
         break;
     }

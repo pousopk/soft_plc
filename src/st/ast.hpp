@@ -6,6 +6,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 #include <string>
 #include <string_view>
@@ -56,6 +57,9 @@ const char* dataTypeName(DataType type); // "BOOL", "INT", ...
 
 // The elementary type with that name (any case), nothing otherwise.
 std::optional<DataType> elementaryTypeFromName(std::string_view name);
+
+// Every elementary type: BOOL, SINT, ..., REAL, TIME.
+std::span<const DataType> elementaryTypes();
 
 // Families of types, as IEC groups them.
 bool isIntegerType(DataType type);  // SINT .. LINT, signed or not (not integer literals)
@@ -233,7 +237,9 @@ enum class BuiltinFunction {
     Abs, Sqrt, Ln, Log, Exp, Sin, Cos, Tan, Asin, Acos, Atan, Expt,
     Trunc, Round, Ceil, Floor,
     Min, Max, Limit, Sel, Mux,
+    Shl, Shr, Rol, Ror, // shift and rotate a bit string
     Convert, // BOOL_TO_INT, DINT_TO_INT, REAL_TO_DINT, ...: from argumentTypes[0] to the result type
+    DWordToReal, RealToDWord, // copy the 32 bits unchanged, e.g. to decode a float received as a DWORD
 };
 
 // A function call inside an expression: Scale(raw := r, low := 0.0) or MAX(a, b).

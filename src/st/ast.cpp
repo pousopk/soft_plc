@@ -248,6 +248,8 @@ std::optional<DataType> elementaryTypeFromName(std::string_view name) {
     return std::nullopt;
 }
 
+std::span<const DataType> elementaryTypes() { return kElementaryTypes; }
+
 bool isIntegerType(DataType type) {
     switch (type) {
     case DataType::SInt:

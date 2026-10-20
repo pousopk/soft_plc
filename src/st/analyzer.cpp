@@ -976,7 +976,11 @@ private:
                 fail(where, "MUX needs a selector K and at least 2 inputs");
             }
             break;
-        case BuiltinFunction::Expt: requireArgumentCount(call, 2, where); break;
+        case BuiltinFunction::Expt:
+        case BuiltinFunction::Shl:
+        case BuiltinFunction::Shr:
+        case BuiltinFunction::Rol:
+        case BuiltinFunction::Ror: requireArgumentCount(call, 2, where); break;
         case BuiltinFunction::Limit:
         case BuiltinFunction::Sel: requireArgumentCount(call, 3, where); break;
         default: requireArgumentCount(call, 1, where); break;
@@ -1051,7 +1055,24 @@ private:
             types[0] = DataType::DInt;
             return common;
         }
+        case BuiltinFunction::Shl:
+        case BuiltinFunction::Shr:
+        case BuiltinFunction::Rol:
+        case BuiltinFunction::Ror: {
+            if (!isBitString(first.type)) {
+                fail(first.location,
+                     fmt::format("{} needs a bit string (BYTE, WORD or DWORD) for IN, not {}", name, typeText(first)));
+            }
+            const auto& n = *call.arguments[1].value;
+            if (!isInteger(n.type)) {
+                fail(n.location, fmt::format("{} needs an integer for N, not {}", name, typeText(n)));
+            }
+            types = {first.type, n.type};
+            return first.type;
+        }
         case BuiltinFunction::Convert:
+        case BuiltinFunction::DWordToReal:
+        case BuiltinFunction::RealToDWord:
             checkAssignable(*elementaryType(signature.from), first, name);
             types = {signature.from};
             return signature.to;
