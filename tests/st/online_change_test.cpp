@@ -177,3 +177,20 @@ TEST_CASE("The online change example in the programming guide (chapter 8) does w
     cycles(1); // 20 s: the new preset
     CHECK(image.readBit(Area::Output, 0, 0));
 }
+
+TEST_CASE("Online change keeps the text of strings, and starts over those whose length changed") {
+    ProcessImage image(4, 4, 8);
+    StProgram program(compile("PROGRAM Main VAR msg : STRING := 'a'; other : STRING[5] := 'b'; END_VAR END_PROGRAM"),
+                      {}, 1'000'000, testEngine());
+    program.execute(image, CycleContext{TimePoint{}, 0});
+    REQUIRE(program.interpreter().setText("msg", u"kept", image));
+    REQUIRE(program.interpreter().setText("other", u"gone", image));
+    REQUIRE(program.forceText("msg", u"forced"));
+    const auto result = program.replace(
+        compile("PROGRAM Main VAR msg : STRING := 'a'; other : STRING[10] := 'b'; added : INT; END_VAR END_PROGRAM"));
+    CHECK(result.initialized == std::vector<std::string>{"other", "added"});
+    CHECK(*program.interpreter().textOf("msg", image) == u"kept");
+    CHECK(*program.interpreter().textOf("other", image) == u"b");
+    program.execute(image, CycleContext{TimePoint{}, 0});
+    CHECK(*program.interpreter().textOf("msg", image) == u"forced"); // the force survived the change
+}

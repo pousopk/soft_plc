@@ -95,7 +95,7 @@ bool sameLayout(const Type& a, const Type& b) {
     }
     switch (a.kind) {
     case Type::Kind::Elementary:
-        return a.elementary == b.elementary;
+        return a.elementary == b.elementary && a.stringLength == b.stringLength; // STRING[10] isn't STRING[20]
     case Type::Kind::Array:
         return a.dimensions == b.dimensions && sameLayout(*a.element, *b.element);
     case Type::Kind::Struct:
@@ -409,7 +409,10 @@ namespace {
 
 // One instance's part of an online change: `now` (of the new program) takes
 // what it can from `before` (of the old one), variable by variable.
-void takeOverInstance(Instance& now, Instance& before, const std::string& prefix, Interpreter::Takeover& result) {
+// `pools` are the new interpreter's string pool and the old one's: texts are
+// copied from one to the other, as each interpreter has its own.
+void takeOverInstance(Instance& now, Instance& before, const std::string& prefix, Interpreter::Takeover& result,
+                      std::pair<StringPool*, const StringPool*> pools) {
     if (now.native && before.native) {
         now.native = std::move(before.native); // a TON's start time, a CTU's count, ...
     }
@@ -421,7 +424,7 @@ void takeOverInstance(Instance& now, Instance& before, const std::string& prefix
         if (variable.type == DataType::FunctionBlock) {
             if (old != nullptr && old->type == DataType::FunctionBlock &&
                 toUpper(old->functionBlock->name) == toUpper(variable.functionBlock->name)) {
-                takeOverInstance(*now.children[slot], *before.children[*oldSlot], path + ".", result);
+                takeOverInstance(*now.children[slot], *before.children[*oldSlot], path + ".", result, pools);
             } else {
                 result.initialized.push_back(path);
             }
@@ -436,9 +439,17 @@ void takeOverInstance(Instance& now, Instance& before, const std::string& prefix
             result.initialized.push_back(path);
             continue;
         }
-        const auto leaves = variable.typeInfo->leafCount();
-        std::copy_n(before.values.begin() + static_cast<std::ptrdiff_t>(old->leaf), leaves,
-                    now.values.begin() + static_cast<std::ptrdiff_t>(variable.leaf));
+        const auto& leaves = variable.typeInfo->leaves;
+        for (std::size_t k = 0; k < leaves.size(); ++k) {
+            const auto& from = before.values[old->leaf + k];
+            auto& to = now.values[variable.leaf + k];
+            if (isStringType(leaves[k].type)) {
+                // The text, into the new string's own buffer (the old one goes away with the old interpreter).
+                pools.first->assign(std::get<std::int64_t>(to), pools.second->view(std::get<std::int64_t>(from)));
+            } else {
+                to = from;
+            }
+        }
         ++result.kept;
     }
 }
@@ -447,7 +458,7 @@ void takeOverInstance(Instance& now, Instance& before, const std::string& prefix
 
 Interpreter::Takeover Interpreter::takeOver(Interpreter& old) {
     Takeover result;
-    takeOverInstance(*root_, *old.root_, "", result);
+    takeOverInstance(*root_, *old.root_, "", result, {&pool_, &old.pool_});
     return result;
 }
 

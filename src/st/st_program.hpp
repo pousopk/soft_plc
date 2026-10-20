@@ -49,10 +49,18 @@ public:
     // Forces a variable (by path, as in Interpreter::describe) to `value`.
     // Returns false if there's no such variable.
     bool force(std::string_view path, const Value& value);
+    // Forces a STRING or WSTRING (or CHAR, WCHAR) variable to a text.
+    bool forceText(std::string_view path, std::u16string text);
     // Removes a force. Returns false if the variable wasn't forced.
     bool unforce(std::string_view path);
+    // A forced value: `value`, or for a text, `text`. Texts are kept here, not
+    // in the interpreter's string pool, so they survive an online change.
+    struct Forced {
+        Value value;
+        std::optional<std::u16string> text;
+    };
     // The forced variables, keyed by their path as declared.
-    const std::map<std::string, Value>& forces() const { return forces_; }
+    const std::map<std::string, Forced>& forces() const { return forces_; }
 
 private:
     void applyForces(ProcessImage& image);
@@ -62,7 +70,7 @@ private:
     Interpreter interpreter_;
     StopHandler onStop_;
     std::optional<RuntimeError> stopError_;
-    std::map<std::string, Value> forces_;
+    std::map<std::string, Forced> forces_;
 };
 
 } // namespace softplc::st

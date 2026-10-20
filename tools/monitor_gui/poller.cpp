@@ -1,9 +1,9 @@
 #include "poller.hpp"
 #include "monitor/monitor_client.hpp"
+#include "util/text.hpp"
 #include <chrono>
 #include <map>
 #include <optional>
-#include <sstream>
 
 namespace softplc::monitor {
 
@@ -11,14 +11,8 @@ namespace {
 
 using namespace std::chrono_literals;
 
-std::vector<std::string> words(const std::string& text) {
-    std::vector<std::string> result;
-    std::istringstream stream(text);
-    for (std::string word; stream >> word;) {
-        result.push_back(std::move(word));
-    }
-    return result;
-}
+// Replies are words separated by spaces; a quoted text ('Hello World') is one word.
+std::vector<std::string> words(const std::string& text) { return splitQuotedWords(text); }
 
 // Strips the leading "OK", or returns nothing for an "ERR" reply.
 std::optional<std::string> okPayload(const std::string& reply) {

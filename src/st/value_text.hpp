@@ -15,4 +15,9 @@ namespace softplc::st {
 // This is the reverse of formatValue(value, type).
 tl::expected<Value, std::string> parseValue(std::string_view text, DataType type);
 
+// Reads a text typed for a STRING, WSTRING, CHAR or WCHAR variable: a
+// literal in its own quotes ('text' or "text"), with $ escapes. A CHAR or
+// WCHAR takes one character.
+tl::expected<std::u16string, std::string> parseTextValue(std::string_view text, DataType type);
+
 } // namespace softplc::st

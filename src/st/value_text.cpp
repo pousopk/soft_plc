@@ -1,5 +1,6 @@
 #include "st/value_text.hpp"
 #include "st/lexer.hpp"
+#include "st/string_text.hpp"
 #include "util/text.hpp"
 #include <charconv>
 #include <fmt/format.h>
@@ -107,6 +108,19 @@ tl::expected<Value, std::string> parseValue(std::string_view text, DataType type
     }
     default: return tl::unexpected(fmt::format("can't enter a value for a {}", dataTypeName(type)));
     }
+}
+
+tl::expected<std::u16string, std::string> parseTextValue(std::string_view text, DataType type) {
+    const bool wide = type == DataType::WString || type == DataType::WChar;
+    const char quote = wide ? '"' : '\'';
+    if (text.size() < 2 || text.front() != quote || text.back() != quote) {
+        return tl::unexpected(fmt::format("'{}' is not a {}: write it like {}text{}", text, dataTypeName(type), quote, quote));
+    }
+    auto value = decodeLiteral(text.substr(1, text.size() - 2), wide ? TextKind::WString : TextKind::String);
+    if (value && isCharType(type) && value->size() != 1) {
+        return tl::unexpected(fmt::format("a {} is one character, not {}", dataTypeName(type), value->size()));
+    }
+    return value;
 }
 
 } // namespace softplc::st

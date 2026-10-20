@@ -1,24 +1,17 @@
 #include "monitor/monitor_service.hpp"
 #include "st/analyzer.hpp"
+#include "st/string_text.hpp"
 #include "st/value_text.hpp"
 #include "util/text.hpp"
 #include <chrono>
 #include <fmt/format.h>
-#include <sstream>
 #include <vector>
 
 namespace softplc::monitor {
 
 namespace {
 
-std::vector<std::string> splitWords(std::string_view text) {
-    std::vector<std::string> words;
-    std::istringstream stream{std::string(text)};
-    for (std::string word; stream >> word;) {
-        words.push_back(std::move(word));
-    }
-    return words;
-}
+bool isText(st::DataType type) { return st::isStringType(type) || st::isCharType(type); }
 
 double toMicroseconds(Duration d) { return std::chrono::duration<double, std::micro>(d).count(); }
 
@@ -62,7 +55,7 @@ std::string MonitorService::handle(std::string_view request) {
     if (request.size() > 5 && toUpper(request.substr(0, 5)) == "LOAD ") {
         return load(request.substr(5));
     }
-    auto words = splitWords(request);
+    auto words = splitQuotedWords(request); // 'Hello World' is one word
     if (words.empty()) {
         return "ERR empty request";
     }
@@ -95,10 +88,9 @@ std::string MonitorService::read(const std::vector<std::string>& paths) const {
     const auto& interpreter = program_.interpreter();
     std::string reply = "OK";
     for (const auto& path : paths) {
-        const auto variable = interpreter.describe(path);
-        const auto value = interpreter.valueOf(path, image_);
+        const auto value = interpreter.formatValueOf(path, image_);
         reply += ' ';
-        reply += variable && value ? st::formatValue(*value, variable->type) : "?";
+        reply += value ? *value : "?";
     }
     return reply;
 }
@@ -110,6 +102,14 @@ std::string MonitorService::write(const std::vector<std::string>& args) {
     const auto variable = program_.interpreter().describe(args[0]);
     if (!variable) {
         return fmt::format("ERR unknown variable '{}'", args[0]);
+    }
+    if (isText(variable->type)) {
+        const auto text = st::parseTextValue(args[1], variable->type);
+        if (!text) {
+            return "ERR " + text.error();
+        }
+        program_.interpreter().setText(variable->path, *text, image_);
+        return "OK";
     }
     const auto value = st::parseValue(args[1], variable->type);
     if (!value) {
@@ -126,6 +126,15 @@ std::string MonitorService::force(const std::vector<std::string>& args) {
     const auto variable = program_.interpreter().describe(args[0]);
     if (!variable) {
         return fmt::format("ERR unknown variable '{}'", args[0]);
+    }
+    if (isText(variable->type)) {
+        const auto text = st::parseTextValue(args[1], variable->type);
+        if (!text) {
+            return "ERR " + text.error();
+        }
+        program_.forceText(variable->path, *text);
+        program_.interpreter().setText(variable->path, *text, image_);
+        return "OK";
     }
     const auto value = st::parseValue(args[1], variable->type);
     if (!value) {
@@ -149,9 +158,13 @@ std::string MonitorService::unforce(const std::vector<std::string>& args) {
 
 std::string MonitorService::forces() const {
     std::string reply = "OK";
-    for (const auto& [path, value] : program_.forces()) {
+    for (const auto& [path, forced] : program_.forces()) {
         const auto variable = program_.interpreter().describe(path);
-        reply += fmt::format(" {}={}", path, st::formatValue(value, variable ? variable->type : st::DataType::Unknown));
+        const auto type = variable ? variable->type : st::DataType::Unknown;
+        const auto kind = type == st::DataType::WString || type == st::DataType::WChar ? st::TextKind::WString
+                                                                                      : st::TextKind::String;
+        reply += fmt::format(" {}={}", path,
+                             forced.text ? st::encodeLiteral(*forced.text, kind) : st::formatValue(forced.value, type));
     }
     return reply;
 }

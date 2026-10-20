@@ -49,7 +49,16 @@ bool StProgram::force(std::string_view path, const Value& value) {
     if (!variable) {
         return false;
     }
-    forces_[variable->path] = value;
+    forces_[variable->path] = Forced{value, std::nullopt};
+    return true;
+}
+
+bool StProgram::forceText(std::string_view path, std::u16string text) {
+    const auto variable = interpreter_.describe(path);
+    if (!variable) {
+        return false;
+    }
+    forces_[variable->path] = Forced{Value{}, std::move(text)};
     return true;
 }
 
@@ -59,8 +68,12 @@ bool StProgram::unforce(std::string_view path) {
 }
 
 void StProgram::applyForces(ProcessImage& image) {
-    for (const auto& [path, value] : forces_) {
-        interpreter_.setValue(path, value, image);
+    for (const auto& [path, forced] : forces_) {
+        if (forced.text) {
+            interpreter_.setText(path, *forced.text, image);
+        } else {
+            interpreter_.setValue(path, forced.value, image);
+        }
     }
 }
 

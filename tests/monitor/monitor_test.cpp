@@ -7,6 +7,7 @@
 #include "st/st_program.hpp"
 #include "st/value_text.hpp"
 #include "support/engine.hpp"
+#include "util/text.hpp"
 #include <chrono>
 #include <future>
 #include <limits>
@@ -139,6 +140,37 @@ TEST_CASE("The monitor lists and writes the new types") {
     CHECK(plc.service.handle("READ w") == "OK 16#1234");
     CHECK(plc.service.handle("WRITE l 9223372036854775807") == "OK");
     CHECK(plc.service.handle("READ l") == "OK 9223372036854775807");
+}
+
+TEST_CASE("The monitor reads and writes strings with spaces and quotes") {
+    Plc plc;
+    REQUIRE(plc.service.handle("LOAD " + escaped("PROGRAM Main VAR msg : STRING; n : INT; c : CHAR; END_VAR END_PROGRAM"))
+                .rfind("OK", 0) == 0);
+    plc.cycles(1);
+    CHECK(plc.service.handle("LIST").find(" msg:STRING") != std::string::npos);
+    CHECK(plc.service.handle("WRITE msg 'Hello World'") == "OK");
+    CHECK(plc.service.handle("READ msg n") == "OK 'Hello World' 0");
+    CHECK(plc.service.handle("WRITE msg 'it$'s'") == "OK");
+    CHECK(plc.service.handle("READ msg") == "OK 'it$'s'");
+    CHECK(plc.service.handle("WRITE msg '\xC3\xA9'") == "OK");
+    CHECK(plc.service.handle("READ msg") == "OK '$E9'");
+    CHECK(plc.service.handle("WRITE c 'z'") == "OK");
+    CHECK(plc.service.handle("READ c") == "OK 'z'");
+    CHECK(plc.service.handle("WRITE msg 5") == "ERR '5' is not a STRING: write it like 'text'");
+    CHECK(plc.service.handle("WRITE c 'zz'") == "ERR a CHAR is one character, not 2");
+    CHECK(plc.service.handle("FORCE msg 'x y'") == "OK");
+    CHECK(plc.service.handle("FORCES").find(" msg='x y'") != std::string::npos);
+    REQUIRE(plc.service.handle("LOAD " + escaped("PROGRAM Main VAR msg : STRING; n : INT; c : CHAR; END_VAR END_PROGRAM"))
+                .rfind("OK", 0) == 0);
+    plc.cycles(1);
+    CHECK(plc.service.handle("READ msg") == "OK 'x y'");
+}
+
+TEST_CASE("Requests and replies are split into words, keeping quoted texts whole") {
+    CHECK(splitQuotedWords("READ a 'b c'  \"d$\"e f\" g") ==
+          std::vector<std::string>{"READ", "a", "'b c'", "\"d$\"e f\"", "g"});
+    CHECK(splitQuotedWords(" x='it$'s here' y=2 ") == std::vector<std::string>{"x='it$'s here'", "y=2"});
+    CHECK(splitQuotedWords("").empty());
 }
 
 // ---------------------------------------------------------------- Variable paths

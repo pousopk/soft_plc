@@ -30,6 +30,8 @@ std::string editHint(const std::string& typeName) {
     if (type == st::DataType::Bool) return "TRUE";
     if (st::isBitString(type)) return "16#" + std::string(st::bitWidth(type) / 4, '0'); // 16#0000 for a WORD
     if (st::isIntegerType(type)) return "0";
+    if (type == st::DataType::String || type == st::DataType::Char) return "'text'";
+    if (type == st::DataType::WString || type == st::DataType::WChar) return "\"text\"";
     return "value";
 }
 
