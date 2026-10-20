@@ -321,7 +321,10 @@ private:
 
     Token decimalInteger(SourceLocation start, std::size_t begin) {
         std::string text(source_.substr(begin, pos_ - begin));
-        return Token{TokenKind::Integer, text, start, parseInteger(start, text, withoutUnderscores(text), 10)};
+        // Parsed before building the Token: GCC 11 leaks the copied text if an
+        // initializer throws while it builds the returned Token in place.
+        const auto value = parseInteger(start, text, withoutUnderscores(text), 10);
+        return Token{TokenKind::Integer, std::move(text), start, value};
     }
 
     // Base#digits, e.g. 16#FF. Only bases 2, 8 and 16 exist in IEC 61131-3.
@@ -340,7 +343,8 @@ private:
         if (digits.empty()) {
             fail(start, fmt::format("'{}' needs base-{} digits after '#'", text, base));
         }
-        return Token{TokenKind::Integer, text, start, parseInteger(start, text, digits, base)};
+        const auto value = parseInteger(start, text, digits, base); // before the Token: see decimalInteger
+        return Token{TokenKind::Integer, std::move(text), start, value};
     }
 
     std::int64_t parseInteger(SourceLocation start, const std::string& text, const std::string& digits, int base) {
