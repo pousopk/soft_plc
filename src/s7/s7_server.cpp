@@ -46,13 +46,11 @@ void mergeClientWrites(std::span<std::uint8_t> plc, std::span<std::uint8_t> shar
     }
 }
 
-S7Server::S7Server(ProcessImage& image) : server_(Srv_Create()) {
+S7Server::S7Server(ProcessImage& image) : image_(image), server_(Srv_Create()) {
     share(srvAreaPE, 0, image.bytes(Area::Input));
     share(srvAreaPA, 0, image.bytes(Area::Output));
     share(srvAreaMK, 0, image.bytes(Area::Marker));
-    for (const auto& [number, bytes] : image.dataBlocks()) {
-        share(srvAreaDB, number, image.dataBlock(number));
-    }
+    shareNewDataBlocks();
 }
 
 S7Server::~S7Server() {
@@ -75,6 +73,19 @@ void S7Server::share(int code, std::uint16_t index, std::span<std::uint8_t> plc)
     areas_.push_back(std::move(area));
 }
 
+// Snap7 allows registering an area while it serves clients: it builds the
+// area completely, then stores one pointer to it.
+void S7Server::shareNewDataBlocks() {
+    for (const auto& [number, bytes] : image_.dataBlocks()) {
+        const bool shared = std::any_of(areas_.begin(), areas_.end(), [number = number](const auto& area) {
+            return area->code == srvAreaDB && area->index == number;
+        });
+        if (!shared) {
+            share(srvAreaDB, number, image_.dataBlock(number));
+        }
+    }
+}
+
 tl::expected<void, std::string> S7Server::start(std::uint16_t port, const std::string& address) {
     Srv_SetParam(server_, p_u16_LocalPort, &port);
     if (const int result = Srv_StartTo(server_, address.c_str()); result != 0) {
@@ -94,6 +105,7 @@ tl::expected<void, std::string> S7Server::start(std::uint16_t port, const std::s
 }
 
 void S7Server::synchronize() {
+    shareNewDataBlocks();
     for (const auto& area : areas_) {
         AreaLock lock(server_, area->code, area->index);
         mergeClientWrites(area->plc, area->shared, area->published);

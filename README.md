@@ -20,13 +20,13 @@ cmake -S . -B build                 # Debug by default, with AddressSanitizer + 
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 
-./build/soft_plc                              # built-in C++ blink demo; Ctrl+C to stop
+./build/soft_plc                              # an empty PLC, waiting for a download from ladder_editor; Ctrl+C to stop
 ./build/soft_plc examples/traffic_light.st    # run a Structured Text program
 ./build/soft_plc examples/function_blocks.st  # function blocks, timers and counters
 ./build/st_parse examples/function_blocks.st  # show how a program is parsed (and check it)
 ./build/st_parse -e "a := b + 3 * c;"
 ./build/soft_plc examples/inspection.st       # arrays and structs: four cameras' results in a DB
-./build/soft_plc --monitor examples/analog.st # functions: scaling analog inputs, then force rawPressure
+./build/soft_plc examples/analog.st           # functions: scaling analog inputs, then force rawPressure
 ```
 
 When a program stops (Ctrl+C or a runtime error), `soft_plc` prints the final value of every variable.
@@ -34,14 +34,14 @@ When a program stops (Ctrl+C or a runtime error), `soft_plc` prints the final va
 ### Online monitoring
 
 ```bash
-./build/soft_plc --monitor examples/function_blocks.st   # listens on 127.0.0.1:5020 (--monitor=PORT to change)
+./build/soft_plc examples/function_blocks.st             # always listens on 127.0.0.1:5020 (--monitor=PORT to change)
 ./build/soft_plc_monitor                                  # the GUI: watch, write, force and plot variables
 ./build/soft_plc_monitor --plot fast.out --plot slow.out  # start with variables in the trend plot
 ```
 
-The GUI needs GLFW and OpenGL development files (`libglfw3-dev`, `libgl-dev`); without them the rest still builds. The protocol is one line of text per request, so it can also be used by hand, e.g. `nc 127.0.0.1 5020`, then `READ fast.out`, `FORCE doneLamp TRUE`, `STATUS`. See `src/monitor/monitor_service.hpp` for every command. With `--monitor`, a runtime error leaves the PLC in STOP (instead of exiting) so the monitor can show why.
+The GUI needs GLFW and OpenGL development files (`libglfw3-dev`, `libgl-dev`); without them the rest still builds. The protocol is one line of text per request, so it can also be used by hand, e.g. `nc 127.0.0.1 5020`, then `READ fast.out`, `FORCE doneLamp TRUE`, `STATUS`. See `src/monitor/monitor_service.hpp` for every command. A runtime error leaves the PLC in STOP (it doesn't exit) so the monitor can show why, and a download can fix it. To run two soft_plcs at once, give each its own port.
 
-**Online change:** `LOAD <program>` (the source on one line, `\n` for line ends) replaces the running program between two cycles, without stopping. Every variable the new version shares with the old one, with the same name and type, keeps its value, and standard blocks keep their hidden state, so a running timer goes on timing and a counter keeps its count. New variables, or ones whose type changed, start at their initial value; the reply lists them. `ladder_editor` uses it for its Download button.
+**Online change:** `LOAD <program>` (the source on one line, `\n` for line ends) replaces the running program between two cycles, without stopping. Every variable the new version shares with the old one, with the same name and type, keeps its value, and standard blocks keep their hidden state, so a running timer goes on timing and a counter keeps its count. New variables, or ones whose type changed, start at their initial value; the reply lists them. `ladder_editor` uses it for its Download button. `SOURCE` returns the running program the same way, so `ladder_editor` can upload it. Started without a program, soft_plc runs an empty one, so you can Connect from `ladder_editor` and Download the project. Data blocks the new program uses are created, and S7 clients see them from the next cycle.
 
 ### S7 server
 

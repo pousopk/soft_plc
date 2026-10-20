@@ -54,8 +54,9 @@ Without `AT`, arrays and structs live in the program's own memory, where none of
 ## Running and options
 
 ```bash
-./build/soft_plc program.st                    # run it
-./build/soft_plc --monitor program.st          # ... and accept monitoring connections on 127.0.0.1:5020
+./build/soft_plc program.st                    # run it, accepting monitoring connections on 127.0.0.1:5020
+./build/soft_plc                               # an empty program, waiting for a download (e.g. from ladder_editor)
+./build/soft_plc --monitor=5021 program.st     # monitoring on another port, e.g. to run two soft_plcs at once
 ./build/soft_plc --s7 program.st               # ... and be an S7 server on 127.0.0.1:102 (rack 0, slot 1)
 ./build/soft_plc --s7=1102 --db 20:256 program.st
 ./build/soft_plc --engine=tree program.st      # use the tree-walking interpreter instead of the bytecode VM
@@ -73,14 +74,14 @@ These stop the PLC while it runs:
 - a `MUX` selector outside its inputs,
 - an `AT` address outside its area or data block.
 
-In STOP, the program no longer runs and **all outputs are switched off** (the safe state). The reason is printed with its line and column. Without `--monitor` or `--s7`, soft_plc then exits. With them, it stays up in STOP so connected tools can see what happened; S7 clients see the CPU in STOP.
+In STOP, the program no longer runs and **all outputs are switched off** (the safe state). The reason is printed with its line and column. soft_plc stays up in STOP so connected tools can see what happened, and a download can fix it; S7 clients see the CPU in STOP.
 
 ## Going online
 
-With `--monitor`, soft_plc answers requests between cycles. Use the GUI:
+soft_plc always answers monitoring requests, between cycles. Use the GUI:
 
 ```bash
-./build/soft_plc --monitor examples/inspection.st
+./build/soft_plc examples/inspection.st
 ./build/soft_plc_monitor                                  # a table of every variable, write, force, trend plot
 ./build/soft_plc_monitor --plot 'cameras[1].score'        # start with a variable in the trend (quote the brackets)
 ```
@@ -97,6 +98,7 @@ or type the requests yourself, one per line (`nc 127.0.0.1 5020`):
 | `FORCES` | `OK lamp=TRUE` | |
 | `STATUS` | `OK RUN cycles=1234 cycle_ms=10 avg_us=12.5 max_us=80.1 overruns=0` | in STOP: `OK STOP … error=…` |
 | `LOAD <program>` | `OK kept=12 initialized=1 tens` | a new version of the program, see below |
+| `SOURCE` | `OK PROGRAM Main\nVAR\n…` | the running program, escaped as for `LOAD`; `ladder_editor`'s **Upload** uses it |
 
 Paths are case-insensitive: `fast.offTimer.ET`, `cameras[2].score`, `grid[1,3]`. Values are written as in a program: `TRUE`, `-5`, `16#FF`, `2.5`, `T#2s`.
 

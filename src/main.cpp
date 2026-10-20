@@ -1,12 +1,12 @@
-// soft_plc: runs a Structured Text program, or the built-in C++ blink demo.
+// soft_plc: runs a Structured Text program, always accepting monitoring
+// connections (and downloads, e.g. from ladder_editor).
 //
-//   soft_plc                                   blink demo
+//   soft_plc                                   an empty program, waiting for a download
 //   soft_plc examples/traffic_light.st
-//   soft_plc --monitor examples/function_blocks.st   ... and accept monitoring connections
-//   soft_plc --s7=1102 examples/s7_demo.st           ... and act as an S7 server
+//   soft_plc --monitor=5021 examples/function_blocks.st   ... monitoring on another port
+//   soft_plc --s7=1102 examples/s7_demo.st                ... and act as an S7 server
 #include "core/process_image.hpp"
 #include "core/scan_cycle.hpp"
-#include "demo/blink_program.hpp"
 #include "demo/console_io.hpp"
 #include "monitor/monitor_server.hpp"
 #include "monitor/monitor_service.hpp"
@@ -50,8 +50,8 @@ constexpr std::uint16_t kDefaultMonitorPort = 5020;
 constexpr std::uint16_t kDefaultS7Port = 102;
 
 struct Options {
-    std::string programPath;          // empty: run the built-in blink demo
-    std::optional<std::uint16_t> monitorPort;
+    std::string programPath; // empty: start with an empty program
+    std::uint16_t monitorPort = kDefaultMonitorPort;
     std::optional<std::uint16_t> s7Port;
     std::map<std::uint16_t, std::size_t> dataBlocks; // --db N:SIZE
     softplc::st::Engine engine = softplc::st::Engine::Bytecode;
@@ -92,7 +92,7 @@ std::optional<Options> parseOptions(int argc, char** argv) {
         bool valid = true;
         if (auto port = portOption(arg, "--monitor", kDefaultMonitorPort, matched, valid); matched) {
             if (!valid) return std::nullopt;
-            options.monitorPort = port;
+            options.monitorPort = *port;
         } else if (auto s7 = portOption(arg, "--s7", kDefaultS7Port, matched, valid); matched) {
             if (!valid) return std::nullopt;
             options.s7Port = s7;
@@ -125,11 +125,13 @@ int main(int argc, char** argv) {
     using namespace std::chrono_literals;
 
     const auto options = parseOptions(argc, argv);
-    if (!options || (options->monitorPort && options->programPath.empty())) {
-        fmt::print(stderr, "usage: soft_plc [--monitor[=PORT]] [--s7[=PORT]] [--db N:SIZE]... [--engine=tree|bytecode]\n"
+    if (!options) {
+        fmt::print(stderr, "usage: soft_plc [--monitor=PORT] [--s7[=PORT]] [--db N:SIZE]... [--engine=tree|bytecode]\n"
                            "                [program.st]\n"
-                           "  --monitor    accept monitoring connections on 127.0.0.1:{} (or PORT);\n"
-                           "               needs a program file. Connect with soft_plc_monitor.\n"
+                           "  program.st   the program to run; without one, soft_plc starts with an empty\n"
+                           "               program and waits for a download (e.g. from ladder_editor)\n"
+                           "  --monitor    monitoring (always on) listens on 127.0.0.1:{}, or on PORT.\n"
+                           "               Connect with soft_plc_monitor or ladder_editor.\n"
                            "  --s7         act as an S7 server on 127.0.0.1:{} (or PORT), e.g. for plc_gui\n"
                            "  --db N:SIZE  create data block N with SIZE bytes (DBs used with AT are\n"
                            "               created automatically, at least as big as needed)\n"
@@ -144,11 +146,7 @@ int main(int argc, char** argv) {
     softplc::ProcessImage image(/*inputBytes=*/16, /*outputBytes=*/16, /*markerBytes=*/256);
     softplc::ConsoleIo io(softplc::Clock::now());
 
-    std::unique_ptr<softplc::Program> program;
-    softplc::st::StProgram* stProgram = nullptr;
-    std::string source;
-    const bool monitoring = options->monitorPort.has_value();
-
+    std::string source{softplc::st::kEmptyProgram};
     if (!options->programPath.empty()) {
         auto contents = softplc::readFile(options->programPath);
         if (!contents) {
@@ -156,58 +154,50 @@ int main(int argc, char** argv) {
             return 1;
         }
         source = std::move(*contents);
-
-        auto compiled = softplc::st::compileProgram(source);
-        if (!compiled) {
-            fmt::print(stderr, "error: {}\n", softplc::st::formatDiagnostic(compiled.error(), source));
-            return 1;
-        }
-
-        const bool stayInStop = monitoring || options->s7Port.has_value();
-        auto onStop = [&source, stayInStop](const softplc::st::RuntimeError& error) {
-            fmt::print(stderr, "PLC STOP: {}\n",
-                       softplc::st::formatDiagnostic({error.message, error.location}, source));
-            if (!stayInStop) {
-                stopRequested = true; // when connected to others, stay up in STOP so they can see it
-            }
-        };
-        // Data blocks: the ones the program uses, at least as big as --db asks for.
-        auto dataBlocks = options->dataBlocks;
-        for (const auto& [number, size] : softplc::st::dataBlocksUsedBy(*compiled)) {
-            dataBlocks[number] = std::max(dataBlocks[number], size);
-        }
-        for (const auto& [number, size] : dataBlocks) {
-            image.addDataBlock(number, size);
-        }
-
-        auto st = std::make_unique<softplc::st::StProgram>(std::move(*compiled), onStop, 1'000'000, options->engine);
-        stProgram = st.get();
-        program = std::move(st);
-        fmt::print("Running program '{}' from {} ({} engine).\n", stProgram->interpreter().program().name,
-                   options->programPath, softplc::st::engineName(options->engine));
-    } else {
-        for (const auto& [number, size] : options->dataBlocks) {
-            image.addDataBlock(number, size);
-        }
-        program = std::make_unique<softplc::BlinkProgram>();
-        fmt::print("Running the built-in blink demo.\n");
     }
 
-    softplc::ScanCycle plc(image, io, *program, 10ms);
+    auto compiled = softplc::st::compileProgram(source);
+    if (!compiled) {
+        fmt::print(stderr, "error: {}\n", softplc::st::formatDiagnostic(compiled.error(), source));
+        return 1;
+    }
+
+    // A PLC in STOP stays up, so the monitor and S7 clients can see why, and a
+    // download can fix it.
+    auto onStop = [&source](const softplc::st::RuntimeError& error) {
+        fmt::print(stderr, "PLC STOP: {}\n", softplc::st::formatDiagnostic({error.message, error.location}, source));
+    };
+    // Data blocks: the ones the program uses, at least as big as --db asks for.
+    auto dataBlocks = options->dataBlocks;
+    for (const auto& [number, size] : softplc::st::dataBlocksUsedBy(*compiled)) {
+        dataBlocks[number] = std::max(dataBlocks[number], size);
+    }
+    for (const auto& [number, size] : dataBlocks) {
+        image.addDataBlock(number, size);
+    }
+
+    softplc::st::StProgram program(std::move(*compiled), onStop, 1'000'000, options->engine);
+    if (options->programPath.empty()) {
+        fmt::print("Running an empty program ({} engine): download one from ladder_editor.\n",
+                   softplc::st::engineName(options->engine));
+    } else {
+        fmt::print("Running program '{}' from {} ({} engine).\n", program.interpreter().program().name,
+                   options->programPath, softplc::st::engineName(options->engine));
+    }
+
+    softplc::ScanCycle plc(image, io, program, 10ms);
 
     // Monitoring: requests are answered between cycles, on this thread.
     std::unique_ptr<softplc::monitor::MonitorServer> server;
-    std::unique_ptr<softplc::monitor::MonitorService> service;
-    if (monitoring) {
-        try {
-            server = std::make_unique<softplc::monitor::MonitorServer>(*options->monitorPort);
-        } catch (const std::system_error& error) {
-            fmt::print(stderr, "can't start monitoring on port {}: {}\n", *options->monitorPort, error.what());
-            return 1;
-        }
-        service = std::make_unique<softplc::monitor::MonitorService>(*stProgram, image, plc);
-        fmt::print("Monitoring on 127.0.0.1:{}.\n", server->port());
+    try {
+        server = std::make_unique<softplc::monitor::MonitorServer>(options->monitorPort);
+    } catch (const std::system_error& error) {
+        fmt::print(stderr, "can't start monitoring on port {}: {} (choose another with --monitor=PORT)\n",
+                   options->monitorPort, error.what());
+        return 1;
     }
+    softplc::monitor::MonitorService service(program, image, plc, source);
+    fmt::print("Monitoring on 127.0.0.1:{}.\n", server->port());
 
     // S7: clients read and write a copy of the memory, exchanged between cycles.
     std::unique_ptr<softplc::s7::S7Server> s7;
@@ -226,12 +216,10 @@ int main(int argc, char** argv) {
 
     // Between cycles: answer monitoring requests, then exchange data with S7 clients.
     plc.setIdleTask([&] {
-        if (server) {
-            server->processPending([&](std::string_view request) { return service->handle(request); });
-        }
+        server->processPending([&](std::string_view request) { return service.handle(request); });
         if (s7) {
             s7->synchronize();
-            s7->setRunning(stProgram == nullptr || !stProgram->stopped());
+            s7->setRunning(!program.stopped());
         }
     });
 
@@ -243,8 +231,6 @@ int main(int argc, char** argv) {
     fmt::print("Execution time: avg {:.1f} us, min {:.1f} us, max {:.1f} us. Overruns: {}\n",
                toMicroseconds(stats.averageExecution()), toMicroseconds(stats.minExecution),
                toMicroseconds(stats.maxExecution), stats.overruns);
-    if (stProgram != nullptr) {
-        printVariables(stProgram->interpreter(), image);
-    }
-    return stProgram != nullptr && stProgram->stopped() ? 1 : 0;
+    printVariables(program.interpreter(), image);
+    return program.stopped() ? 1 : 0;
 }

@@ -106,8 +106,8 @@ target_link_libraries(soft_plc_core
 ### 4.1 Reading the options
 ```cpp
 struct Options {
-    std::string programPath;
-    std::optional<std::uint16_t> monitorPort;
+    std::string programPath; // empty: start with an empty program
+    std::uint16_t monitorPort = kDefaultMonitorPort;
     std::optional<std::uint16_t> s7Port;
     std::map<std::uint16_t, std::size_t> dataBlocks; // --db N:SIZE
     softplc::st::Engine engine = softplc::st::Engine::Bytecode;
@@ -116,14 +116,14 @@ struct Options {
 std::optional<Options> parseOptions(int argc, char** argv);
 ```
 
-- **`std::optional<T>`** holds a `T` or nothing. `monitorPort` empty means "no `--monitor`". That's clearer than a magic value like port `0` or `-1`.
+- **`std::optional<T>`** holds a `T` or nothing. `s7Port` empty means "no `--s7`". That's clearer than a magic value like port `0` or `-1`. Monitoring is always on, so `monitorPort` is a plain number with a default.
 - `parseOptions` itself returns `std::optional<Options>`: nothing means "bad command line, show the usage".
 - **Default member initialisers** (`engine = Engine::Bytecode`) mean an `Options{}` is valid straight away.
 
 ```cpp
-if (auto port = portOption(arg, "--monitor", kDefaultMonitorPort, matched, valid); matched) {
+if (auto s7 = portOption(arg, "--s7", kDefaultS7Port, matched, valid); matched) {
 ```
-This is an **if with an initialiser** (C++17): `port` exists only inside the `if`/`else`. It keeps a temporary close to where it's used.
+This is an **if with an initialiser** (C++17): `s7` exists only inside the `if`/`else`. It keeps a temporary close to where it's used.
 
 ### 4.2 Stopping cleanly with Ctrl+C
 ```cpp
@@ -142,18 +142,17 @@ if (!compiled) {
     return 1;
 }
 ```
-`compileProgram` returns `tl::expected<CompilationUnit, Diagnostic>`: either the checked program or the first error with its line and column. See lesson C3.
+`compileProgram` returns `tl::expected<CompilationUnit, Diagnostic>`: either the checked program or the first error with its line and column. See lesson C3. Without a program file, `source` is `st::kEmptyProgram` (`PROGRAM Main END_PROGRAM`), so there's always an ST program for a download to replace.
 
 ### 4.4 Creating the objects
 
 ```cpp
 softplc::ProcessImage image(16, 16, 256);
 softplc::ConsoleIo io(softplc::Clock::now());
-std::unique_ptr<softplc::Program> program;
-...
-softplc::ScanCycle plc(image, io, *program, 10ms);
+softplc::st::StProgram program(std::move(*compiled), onStop, 1'000'000, options->engine);
+softplc::ScanCycle plc(image, io, program, 10ms);
 std::unique_ptr<softplc::monitor::MonitorServer> server;
-std::unique_ptr<softplc::monitor::MonitorService> service;
+softplc::monitor::MonitorService service(program, image, plc);
 std::unique_ptr<softplc::s7::S7Server> s7;
 ```
 
@@ -163,12 +162,11 @@ This is the most important picture in the program: **who owns what**.
 main() owns (local variables, destroyed in reverse order)
  ├── image            ProcessImage          the memory
  ├── io               ConsoleIo
- ├── program          unique_ptr<Program>   → StProgram or BlinkProgram
- │                                            └─ Interpreter → instances, bytecode
+ ├── program          StProgram             └─ Interpreter → instances, bytecode
  ├── plc              ScanCycle             holds references: image&, io&, program&
- ├── server           unique_ptr<MonitorServer>  (null without --monitor)
- ├── service          unique_ptr<MonitorService> holds references: program&, image&, plc&
- └── s7               unique_ptr<S7Server>       (null without --s7) holds spans into image
+ ├── server           unique_ptr<MonitorServer>
+ ├── service          MonitorService        holds references: program&, image&, plc&
+ └── s7               unique_ptr<S7Server>  (null without --s7) holds a reference to image
 ```
 
 Two ways of "having" another object:
@@ -177,34 +175,42 @@ Two ways of "having" another object:
 
 The rule that makes borrowing safe: **the borrower must die before the owner.** C++ destroys local variables in the **reverse order** they were created: `s7` first, then `service`, `server`, `plc`, `program`, `io`, and `image` last. Everything that points into `image` is gone before `image` is. Declaring `image` after `plc` would be a bug, because `plc` would hold a reference to an object that was destroyed first (a "dangling reference").
 
-### 4.5 Why `unique_ptr` for the optional parts?
-`server` should exist only with `--monitor`. A `std::unique_ptr` can be empty (`nullptr`), so "create it only if needed" is natural:
+### 4.5 Why `unique_ptr` for `s7` and `server`?
+`s7` should exist only with `--s7`. A `std::unique_ptr` can be empty (`nullptr`), so "create it only if needed" is natural:
 
 ```cpp
-if (monitoring) {
-    server = std::make_unique<softplc::monitor::MonitorServer>(*options->monitorPort);
+if (options->s7Port) {
+    s7 = std::make_unique<softplc::s7::S7Server>(image);
 }
 ```
 
-`std::optional<MonitorServer>` would also work here. `unique_ptr` was chosen because `MonitorServer` can't be copied or moved (it has threads pointing at `this`), and a heap object never moves.
+`std::optional<S7Server>` would also work here. `unique_ptr` was chosen because `S7Server` can't be copied or moved (it owns the Snap7 server and the buffers Snap7 points into), and a heap object never moves.
 
-`program` is a `unique_ptr<Program>` for a different reason: **polymorphism**. It points to either a `StProgram` or a `BlinkProgram`, and only the base class `Program` is known at that line. See lesson C2.
+`server` always exists, but its constructor throws when the port is taken, and the error must be caught to print a helpful message. An object declared inside `try { }` dies at its `}`, so it's declared outside, empty, and created inside:
+
+```cpp
+std::unique_ptr<softplc::monitor::MonitorServer> server;
+try {
+    server = std::make_unique<softplc::monitor::MonitorServer>(options->monitorPort);
+} catch (const std::system_error& error) {
+    ...
+    return 1;
+}
+```
 
 ### 4.6 Wiring it together with a lambda
 ```cpp
 plc.setIdleTask([&] {
-    if (server) {
-        server->processPending([&](std::string_view request) { return service->handle(request); });
-    }
+    server->processPending([&](std::string_view request) { return service.handle(request); });
     if (s7) {
         s7->synchronize();
-        s7->setRunning(stProgram == nullptr || !stProgram->stopped());
+        s7->setRunning(!program.stopped());
     }
 });
 plc.run(stopRequested);
 ```
 
-The `ScanCycle` knows nothing about monitoring or S7. It just calls "whatever function I was given" between cycles. The lambda captures `[&]`, **everything by reference**, so it uses `main`'s own `server`, `s7`, `service` and `stProgram`. That's safe because the lambda never outlives `main`'s variables: `plc.run()` returns before any of them are destroyed.
+The `ScanCycle` knows nothing about monitoring or S7. It just calls "whatever function I was given" between cycles. The lambda captures `[&]`, **everything by reference**, so it uses `main`'s own `server`, `s7`, `service` and `program`. That's safe because the lambda never outlives `main`'s variables: `plc.run()` returns before any of them are destroyed.
 
 ### 4.7 The end
 After Ctrl+C, `run()` returns, the statistics and variables are printed, and `main` returns. Then the destructors run in reverse order: the S7 server stops its threads, the monitor server joins its threads, and so on. **No `delete` and no "cleanup" function is written anywhere.** The destructors are the cleanup. That's RAII, lesson C3.

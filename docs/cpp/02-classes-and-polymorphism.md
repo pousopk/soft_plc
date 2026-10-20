@@ -148,7 +148,7 @@ class StProgram : public Program {                               // src/st/st_pr
 
 - **`= 0`:** "pure virtual", there's no body here. You can't create a plain `Program`, only subclasses that implement it.
 - **`override`:** "this replaces a virtual function of the base". If the signature doesn't match exactly (a missing `const`, say), it's a compile error instead of a silent new function that's never called.
-- **`virtual ~Program() = default;`:** `main` deletes the program through a `unique_ptr<Program>`. Without a virtual destructor, only `~Program` would run, never `~StProgram`, and the interpreter inside would leak. **Rule: a class meant to be used through a base pointer needs a virtual destructor.**
+- **`virtual ~Program() = default;`:** code that owns a program as a `unique_ptr<Program>` deletes it through the base type. Without a virtual destructor, only `~Program` would run, never `~StProgram`, and the interpreter inside would leak. **Rule: a class meant to be used through a base pointer needs a virtual destructor.**
 
 The same pattern appears three times in the project:
 
@@ -253,7 +253,7 @@ The standard blocks' interfaces are written in Structured Text (`kInterfaces`, a
 **1.** Why does `Program` have a virtual destructor? What would happen without it?
 <details><summary>Answer</summary>
 
-`main` owns the program as `unique_ptr<Program>` and deletes it through that base type. Without a virtual destructor, deleting a `StProgram` through a `Program*` only runs `~Program` (formally it's undefined behaviour), so the `Interpreter` inside and everything it owns would leak.
+Whoever owns a program as `unique_ptr<Program>` deletes it through that base type. Without a virtual destructor, deleting a `StProgram` through a `Program*` only runs `~Program` (formally it's undefined behaviour), so the `Interpreter` inside and everything it owns would leak.
 </details>
 
 **2.** Why is there no `default:` in the switches over `Area` and `AccessSize`?

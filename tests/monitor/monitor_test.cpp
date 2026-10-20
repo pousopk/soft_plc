@@ -39,7 +39,8 @@ const char* kProgram = "PROGRAM Main\n"
 
 // A PLC with the test program, driven cycle by cycle.
 struct Plc {
-    Plc() : image(1, 1, 1), program(compile(), {}, 1'000'000, testEngine()), cycle(image, io, program, 10ms), service(program, image, cycle) {}
+    Plc() : image(1, 1, 1), program(compile(), {}, 1'000'000, testEngine()), cycle(image, io, program, 10ms),
+          service(program, image, cycle, kProgram) {}
 
     static st::CompilationUnit compile() {
         auto unit = st::compileProgram(kProgram);
@@ -61,6 +62,21 @@ struct Plc {
     MonitorService service;
     TimePoint now = TimePoint{} + 1h;
 };
+
+// As a client sends a program in LOAD: one line, \n for line ends, \\ for backslashes.
+std::string escaped(std::string_view source) {
+    std::string result;
+    for (const char c : source) {
+        if (c == '\n') {
+            result += "\\n";
+        } else if (c == '\\') {
+            result += "\\\\";
+        } else {
+            result += c;
+        }
+    }
+    return result;
+}
 
 } // namespace
 
@@ -201,7 +217,7 @@ TEST_CASE("STATUS shows RUN, or STOP with the error") {
 TEST_CASE("Unknown and empty requests") {
     Plc plc;
     CHECK(plc.service.handle("BOGUS") ==
-          "ERR unknown command 'BOGUS' (try LIST, READ, WRITE, FORCE, UNFORCE, FORCES, STATUS, LOAD)");
+          "ERR unknown command 'BOGUS' (try LIST, READ, WRITE, FORCE, UNFORCE, FORCES, STATUS, LOAD, SOURCE)");
     CHECK(plc.service.handle("   ") == "ERR empty request");
 }
 
@@ -315,24 +331,6 @@ TEST_CASE("The whole path: client -> server -> service -> PLC") {
 
 // ---------------------------------------------------------------- Online change
 
-namespace {
-
-// As a client sends a program in LOAD: one line, \n for line ends, \\ for backslashes.
-std::string escaped(std::string_view source) {
-    std::string result;
-    for (const char c : source) {
-        if (c == '\n') {
-            result += "\\n";
-        } else if (c == '\\') {
-            result += "\\\\";
-        } else {
-            result += c;
-        }
-    }
-    return result;
-}
-
-} // namespace
 
 TEST_CASE("LOAD changes the running program and keeps its values") {
     Plc plc;
@@ -353,4 +351,42 @@ TEST_CASE("LOAD refuses a program that doesn't compile, and the old one goes on"
     CHECK(reply.rfind("ERR line 2, column 5: ", 0) == 0);
     plc.cycles(1);
     CHECK(plc.service.handle("READ count") == "OK 1");
+}
+
+TEST_CASE("soft_plc's empty program runs, and a download replaces it") {
+    auto empty = st::compileProgram(st::kEmptyProgram);
+    REQUIRE(empty.has_value());
+    ProcessImage image(1, 1, 1);
+    NullIo io;
+    st::StProgram program(std::move(*empty), {}, 1'000'000, testEngine());
+    ScanCycle cycle(image, io, program, 10ms);
+    MonitorService service(program, image, cycle, std::string(st::kEmptyProgram));
+    TimePoint now = TimePoint{} + 1h;
+    cycle.runOnce(now);
+    CHECK(service.handle("LIST") == "OK");
+
+    const char* downloaded = "PROGRAM Main\\nVAR\\n    count AT %DB3.DBW0 : INT;\\nEND_VAR\\n"
+                             "    count := count + 1;\\nEND_PROGRAM";
+    CHECK(service.handle(std::string("LOAD ") + downloaded) == "OK kept=1 initialized=0"); // AT: its value lives in DB3
+    CHECK(image.hasDataBlock(3));
+    cycle.runOnce(now + 10ms);
+    cycle.runOnce(now + 20ms);
+    CHECK(service.handle("READ count") == "OK 2");
+}
+
+TEST_CASE("SOURCE gives the running program, escaped like LOAD") {
+    Plc plc;
+    CHECK(plc.service.handle("SOURCE") == "OK " + escaped(kProgram));
+    CHECK(plc.service.handle("source") == "OK " + escaped(kProgram)); // any case, like the others
+}
+
+TEST_CASE("SOURCE follows a successful LOAD, not a refused one") {
+    Plc plc;
+    std::string changed = kProgram;
+    changed.replace(changed.find("count + 1"), 9, "count + 2");
+    changed.insert(0, "(* a \\ backslash *)\n");
+    REQUIRE(plc.service.handle("LOAD " + escaped(changed)).rfind("OK", 0) == 0);
+    CHECK(plc.service.handle("SOURCE") == "OK " + escaped(changed));
+    REQUIRE(plc.service.handle("LOAD PROGRAM Main\\n    x := 1;\\nEND_PROGRAM").rfind("ERR", 0) == 0);
+    CHECK(plc.service.handle("SOURCE") == "OK " + escaped(changed));
 }

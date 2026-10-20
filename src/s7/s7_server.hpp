@@ -35,8 +35,8 @@ void mergeClientWrites(std::span<std::uint8_t> plc, std::span<std::uint8_t> shar
 // task), with the server's areas locked.
 class S7Server {
 public:
-    // Shares the process image's areas and every data block that exists now
-    // (so create the data blocks first).
+    // Shares the process image's areas and its data blocks, including ones
+    // added later (e.g. by a download), from the next synchronize() on.
     explicit S7Server(ProcessImage& image);
     ~S7Server();
 
@@ -47,7 +47,8 @@ public:
     // Linux (see the README); tests use a high port instead.
     tl::expected<void, std::string> start(std::uint16_t port = 102, const std::string& address = "127.0.0.1");
 
-    // Exchanges changes with the clients. Call between cycles.
+    // Shares any new data blocks, then exchanges changes with the clients.
+    // Call between cycles.
     void synchronize();
 
     // The CPU state clients see when they ask (e.g. plc_gui, TIA Portal): RUN or STOP.
@@ -65,7 +66,9 @@ private:
     };
 
     void share(int code, std::uint16_t index, std::span<std::uint8_t> plc);
+    void shareNewDataBlocks();
 
+    ProcessImage& image_;
     std::uintptr_t server_ = 0; // Snap7's S7Object handle
     // unique_ptr: the server keeps a pointer to each `shared` buffer, so the
     // SharedArea objects must never move in memory.

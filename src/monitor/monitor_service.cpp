@@ -36,10 +36,26 @@ std::string unescape(std::string_view text) {
     return result;
 }
 
+// SOURCE's reply: the same escaping, the other way.
+std::string escape(std::string_view text) {
+    std::string result;
+    for (const char c : text) {
+        if (c == '\n') {
+            result += "\\n";
+        } else if (c == '\\') {
+            result += "\\\\";
+        } else {
+            result += c;
+        }
+    }
+    return result;
+}
+
 } // namespace
 
-MonitorService::MonitorService(st::StProgram& program, ProcessImage& image, const ScanCycle& cycle)
-    : program_(program), image_(image), cycle_(cycle) {}
+MonitorService::MonitorService(st::StProgram& program, ProcessImage& image, const ScanCycle& cycle,
+                               std::string source)
+    : program_(program), image_(image), cycle_(cycle), source_(std::move(source)) {}
 
 std::string MonitorService::handle(std::string_view request) {
     // LOAD's argument is a whole program, spaces and all: not split in words.
@@ -58,9 +74,10 @@ std::string MonitorService::handle(std::string_view request) {
     if (command == "WRITE") return write(words);
     if (command == "FORCE") return force(words);
     if (command == "UNFORCE") return unforce(words);
+    if (command == "SOURCE") return source();
     if (command == "FORCES") return forces();
     if (command == "STATUS") return status();
-    return fmt::format("ERR unknown command '{}' (try LIST, READ, WRITE, FORCE, UNFORCE, FORCES, STATUS, LOAD)", command);
+    return fmt::format("ERR unknown command '{}' (try LIST, READ, WRITE, FORCE, UNFORCE, FORCES, STATUS, LOAD, SOURCE)", command);
 }
 
 std::string MonitorService::list() const {
@@ -172,11 +189,14 @@ std::string MonitorService::load(std::string_view escapedSource) {
         }
     }
     const auto result = program_.replace(std::move(*unit));
+    source_ = source;
     auto reply = fmt::format("OK kept={} initialized={}", result.kept, result.initialized.size());
     for (const auto& path : result.initialized) {
         reply += ' ' + path;
     }
     return reply;
 }
+
+std::string MonitorService::source() const { return "OK " + escape(source_); }
 
 } // namespace softplc::monitor

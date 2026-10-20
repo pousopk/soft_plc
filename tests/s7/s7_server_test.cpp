@@ -228,6 +228,23 @@ TEST_CASE("Clients can't read or write outside a data block, or a block that doe
     CHECK(client.writeDb(9, 0, {1}) != 0);       // no DB9
 }
 
+TEST_CASE("A data block added while running is shared from the next synchronize()") {
+    ProcessImage image(1, 1, 1);
+    s7::S7Server server(image);
+    const auto port = freePort();
+    REQUIRE(server.start(port).has_value());
+    Client client(port);
+    CHECK(client.writeDb(10, 0, {1}) != 0); // no DB10 yet
+
+    image.addDataBlock(10, 4); // as a download using %DB10 does
+    image.write(parseAddress("%DB10.DBW0").value(), 0x1234);
+    server.synchronize();
+    CHECK(client.readDb(10, 0, 2) == std::vector<std::uint8_t>{0x12, 0x34});
+    CHECK(client.writeDb(10, 2, {0x56}) == 0);
+    server.synchronize();
+    CHECK(image.dataBlock(10)[2] == 0x56);
+}
+
 TEST_CASE("Clients see the CPU as RUN or STOP") {
     ProcessImage image(1, 1, 1);
     s7::S7Server server(image);

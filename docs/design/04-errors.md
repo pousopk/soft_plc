@@ -54,7 +54,7 @@ With `expected`, every evaluation in both engines would return a result to check
 
 ### Why STOP, and not "carry on"
 
-What happens after a fault is a **PLC decision**, not a C++ one. A real S7 goes to STOP on an access error (unless the program has an error OB to handle it), and in STOP the outputs go to a safe state. A machine whose program hit a fault shouldn't keep driving its motors on half-computed values. So soft_plc does the same: STOP, all outputs off, the reason kept with its line and column, and (with `--monitor`) the process stays up so you can see why.
+What happens after a fault is a **PLC decision**, not a C++ one. A real S7 goes to STOP on an access error (unless the program has an error OB to handle it), and in STOP the outputs go to a safe state. A machine whose program hit a fault shouldn't keep driving its motors on half-computed values. So soft_plc does the same: STOP, all outputs off, the reason kept with its line and column, and the process stays up so you can see why.
 
 ### What isn't a fault
 

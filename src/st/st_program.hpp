@@ -9,6 +9,10 @@
 
 namespace softplc::st {
 
+// What soft_plc runs when it starts without a program file: nothing, until a
+// download (online change) replaces it.
+inline constexpr std::string_view kEmptyProgram = "PROGRAM Main\nEND_PROGRAM\n";
+
 // Plugs a Structured Text program into the scan cycle (it implements the same
 // Program interface as the C++ demo programs).
 //

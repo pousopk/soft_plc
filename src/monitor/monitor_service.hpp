@@ -25,12 +25,17 @@ namespace softplc::monitor {
 //                            variables it shares with the running one; the
 //                            source is one line, with \n for each line end and
 //                            \\ for a backslash; initialized lists what starts over)
+//   SOURCE                   OK PROGRAM Main\nVAR\n...
+//                            (the running program, escaped as for LOAD, so a
+//                            client like ladder_editor can upload it)
 //
 // It must only be called between cycles (from ScanCycle's idle task), so it
 // always sees a consistent state and never races with the program.
 class MonitorService {
 public:
-    MonitorService(st::StProgram& program, ProcessImage& image, const ScanCycle& cycle);
+    // `source` is the program `program` was compiled from: SOURCE answers it
+    // until a LOAD replaces it.
+    MonitorService(st::StProgram& program, ProcessImage& image, const ScanCycle& cycle, std::string source);
 
     std::string handle(std::string_view request);
 
@@ -43,10 +48,12 @@ private:
     std::string forces() const;
     std::string status() const;
     std::string load(std::string_view escapedSource);
+    std::string source() const;
 
     st::StProgram& program_;
     ProcessImage& image_;
     const ScanCycle& cycle_;
+    std::string source_; // the running program's text
 };
 
 } // namespace softplc::monitor
