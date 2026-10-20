@@ -40,9 +40,8 @@ void printVariables(const softplc::st::Interpreter& interpreter, const softplc::
     using namespace softplc::st;
     fmt::print("Variables:\n");
     for (const auto& variable : interpreter.variables()) {
-        const auto value = interpreter.valueOf(variable.path, image);
-        fmt::print("  {} : {} = {}\n", variable.path, dataTypeName(variable.type),
-                   value ? formatValue(*value, variable.type) : "?");
+        const auto value = interpreter.formatValueOf(variable.path, image);
+        fmt::print("  {} : {} = {}\n", variable.path, dataTypeName(variable.type), value ? *value : "?");
     }
 }
 

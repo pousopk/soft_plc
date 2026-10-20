@@ -19,6 +19,8 @@ public:
     // while setting up: it can move the existing text in memory.
     std::int64_t add(std::size_t capacity);
 
+    std::size_t size() const { return buffers_.size(); } // how many buffers; the next one gets this handle
+
     std::size_t capacity(std::int64_t handle) const { return buffer(handle).capacity; }
 
     // The current text. It stays valid until the buffer is changed.
@@ -35,6 +37,12 @@ public:
     void setChar(std::int64_t handle, std::size_t index, char16_t c) { chars_[buffer(handle).offset + index] = c; }
 
     void clear(std::int64_t handle) { buffer(handle).length = 0; }
+
+    // Sets how long the text is (cut to the capacity), to fill it with setChar.
+    void setLength(std::int64_t handle, std::size_t length) {
+        auto& b = buffer(handle);
+        b.length = length < b.capacity ? length : b.capacity;
+    }
 
 private:
     struct Buffer {

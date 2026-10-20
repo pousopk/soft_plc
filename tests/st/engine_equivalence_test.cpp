@@ -67,12 +67,12 @@ std::optional<std::string> runBothEngines(const std::string& source, int cycles)
         REQUIRE(tree.error == bytecode.error);
         for (const auto& variable : tree.interpreter.variables()) {
             CAPTURE(variable.path);
-            const auto a = tree.interpreter.valueOf(variable.path, tree.image);
-            const auto b = bytecode.interpreter.valueOf(variable.path, bytecode.image);
+            // Compared as text, strings included, so a mismatch is easy to read in the test output.
+            const auto a = tree.interpreter.formatValueOf(variable.path, tree.image);
+            const auto b = bytecode.interpreter.formatValueOf(variable.path, bytecode.image);
             REQUIRE(a.has_value());
             REQUIRE(b.has_value());
-            // Compare as text so a mismatch is easy to read in the test output.
-            REQUIRE(formatValue(*a, variable.type) == formatValue(*b, variable.type));
+            REQUIRE(*a == *b);
         }
         for (const auto area : {Area::Input, Area::Output, Area::Marker}) {
             const auto x = tree.image.bytes(area);
@@ -391,6 +391,37 @@ TEST_CASE("Both engines agree on bits, bytes and words of variables, also with r
             d.%X0 := f;
             l.%B7 := in1.%B1;
             b := d.%B2 OR located[i].%B0;
+        END_PROGRAM
+    )", 300);
+}
+
+TEST_CASE("Both engines agree on strings") {
+    runBothEngines(R"(
+        FUNCTION Label : STRING[12]
+        VAR_INPUT on : BOOL; END_VAR
+            IF on THEN Label := 'running'; ELSE Label := 'stopped'; END_IF;
+        END_FUNCTION
+        FUNCTION_BLOCK Keeper
+        VAR_INPUT text : STRING[6]; END_VAR VAR_OUTPUT last, previous : STRING[6]; END_VAR
+            IF text <> last THEN previous := last; last := text; END_IF;
+        END_FUNCTION_BLOCK
+        PROGRAM Texts
+        VAR
+            a AT %IX0.0 : BOOL; b AT %IX0.1 : BOOL; k AT %IB1 : USINT;
+            names : ARRAY[0..3] OF STRING[8] := ['zero', 'one', 'two', 'three'];
+            pick, shown : STRING[8]; status : STRING[12]; keep : Keeper; c : CHAR; w : WSTRING[4] := "w";
+            ordered, same : BOOL; located AT %MB0 : STRING[6]; wide AT %MB8 : WSTRING[3];
+        END_VAR
+            pick := names[k MOD 4];
+            status := Label(a);
+            ordered := pick < names[(k + 1) MOD 4];
+            same := Label(a) = Label(b);
+            keep(text := pick);
+            shown := keep.previous;
+            IF b THEN located := status; ELSE located := pick; END_IF;
+            wide := w;
+            IF ordered THEN c := 'y'; ELSE c := 'n'; END_IF;
+            names[k MOD 4] := status;
         END_PROGRAM
     )", 300);
 }

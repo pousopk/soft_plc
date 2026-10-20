@@ -49,8 +49,7 @@ Result run(const std::string& source, st::Engine engine, int cycles) {
     Result result;
     result.microsecondsPerCycle = elapsed.count() / cycles;
     for (const auto& variable : interpreter.variables()) {
-        result.finalState += variable.path + "=" +
-                             st::formatValue(*interpreter.valueOf(variable.path, image), variable.type) + " ";
+        result.finalState += variable.path + "=" + *interpreter.formatValueOf(variable.path, image) + " ";
     }
     return result;
 }

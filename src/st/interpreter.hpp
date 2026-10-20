@@ -4,7 +4,9 @@
 #include "st/ast.hpp"
 #include "st/bytecode.hpp"
 #include "st/diagnostic.hpp"
+#include "st/string_pool.hpp"
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
@@ -105,6 +107,16 @@ public:
     // REAL). Returns false if there's no such variable.
     bool setValue(std::string_view path, const Value& value, ProcessImage& image);
 
+    // Texts, for monitoring and tests (they allocate: never call them from
+    // inside a cycle). textOf gives a STRING or WSTRING variable's text, or
+    // a CHAR or WCHAR as one character; setText writes one, cut to its length.
+    std::optional<std::u16string> textOf(std::string_view path, const ProcessImage& image) const;
+    bool setText(std::string_view path, std::u16string_view text, ProcessImage& image);
+
+    // A variable's value as the monitor shows it: like formatValue, and
+    // texts and characters as literals ('abc', "abc").
+    std::optional<std::string> formatValueOf(std::string_view path, const ProcessImage& image) const;
+
     const Pou& program() const { return unit_->program; }
     Engine engine() const { return engine_; }
 
@@ -129,6 +141,15 @@ private:
     struct FunctionFrame {
         std::unique_ptr<Instance> instance;
         std::vector<Value> initial;
+        // Its STRING variables: each leaf's buffer, and one holding its initial text.
+        std::vector<std::pair<std::int64_t, std::int64_t>> strings;
+    };
+
+    // A STRING or WSTRING placed with AT: its text lives in the process
+    // image; `handle` is a buffer it's read into.
+    struct LocatedString {
+        std::int64_t handle = 0;
+        DataType type = DataType::String;
     };
 
     // One argument of a FUNCTION call, worked out before the call.
@@ -173,6 +194,12 @@ private:
     void storePart(const Access& access, const Value& value, Instance& self);
     void copyAggregate(const Place& from, const Place& to, const Type& type);
 
+    // Texts: the scratch buffer of an expression making one, and located strings.
+    static std::int64_t tempHandle(const Instance& self, const Expression& expression);
+    std::int64_t readLocatedString(const Place& place, DataType type, const ProcessImage& image) const;
+    void writeLocatedString(const Place& place, DataType type, std::u16string_view text);
+    void writeStringHeaders();
+
     void countLoopIteration(SourceLocation where);
 
     // The bytecode VM: runs one POU's compiled code on `self`.
@@ -195,6 +222,13 @@ private:
     // the part above its caller's. Fixed size, so pointers into it stay valid.
     std::vector<VmSlot> vmStack_;
     std::size_t vmTop_ = 0;
+
+    // The text of every string, in buffers made before the first cycle.
+    // Mutable: reading a located string fills its buffer from the image.
+    mutable StringPool pool_;
+    std::map<std::pair<const VariableDeclaration*, std::size_t>, LocatedString> locatedStrings_; // by variable and bit
+    std::int64_t scratch_ = 0;     // for setText: a buffer as big as a text can be
+    bool headersWritten_ = false;  // located strings' maximum lengths, written in the first cycle
 };
 
 } // namespace softplc::st

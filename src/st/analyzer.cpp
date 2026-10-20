@@ -1193,7 +1193,29 @@ private:
                                          [&](BinaryExpression& binary) { return binaryType(binary, expression); },
                                      },
                                      expression.node);
+        if (isStringType(expression.type) && pou_ != nullptr && expression.stringTemp == kNoSlot) {
+            addStringTemp(expression);
+        }
         return expression.type;
+    }
+
+    // The scratch buffer a literal or a call making a text is made in (see
+    // Pou::stringTemps): as long as the literal, or as long as the result
+    // can be. Initial values need none: they're copied straight in.
+    void addStringTemp(Expression& expression) {
+        Pou::StringTemp temp;
+        if (const auto* literal = std::get_if<Literal>(&expression.node)) {
+            temp.capacity = literal->text.size();
+            temp.text = literal->text;
+        } else if (const auto* call = std::get_if<CallExpression>(&expression.node);
+                   call != nullptr && call->builtin == BuiltinFunction::None) {
+            const auto& function = unit_.functions[call->functionIndex];
+            temp.capacity = function.variables[function.returnSlot].typeInfo->stringLength;
+        } else {
+            temp.capacity = expression.type == DataType::String ? kMaxStringLength : kMaxWStringLength;
+        }
+        expression.stringTemp = pou_->stringTemps.size();
+        pou_->stringTemps.push_back(std::move(temp));
     }
 
     DataType literalType(const Literal& literal, SourceLocation where) const {

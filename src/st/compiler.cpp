@@ -11,20 +11,21 @@ namespace {
 // How many values an instruction leaves on the stack, minus how many it takes.
 int stackEffect(Op op) {
     switch (op) {
-    case Op::PushInt: case Op::PushReal:
+    case Op::PushInt: case Op::PushReal: case Op::PushString:
     case Op::LoadBool: case Op::LoadInt: case Op::LoadReal:
     case Op::LoadMemberBool: case Op::LoadMemberInt: case Op::LoadMemberReal:
     case Op::LoadTemp:
         return +1;
     case Op::StoreBool: case Op::StoreInt16: case Op::StoreInt32: case Op::StoreReal: case Op::StoreWrapped:
+    case Op::StoreString:
     case Op::StoreMemberBool: case Op::StoreMemberInt16: case Op::StoreMemberInt32: case Op::StoreMemberReal:
-    case Op::StoreMemberWrapped:
+    case Op::StoreMemberWrapped: case Op::StoreMemberString:
     case Op::StoreTemp:
     case Op::AddI: case Op::SubI: case Op::MulI: case Op::DivI: case Op::ModI:
     case Op::AddR: case Op::SubR: case Op::MulR: case Op::DivR: case Op::PowR:
     case Op::EqI: case Op::NeI: case Op::LtI: case Op::LeI: case Op::GtI: case Op::GeI:
     case Op::EqR: case Op::NeR: case Op::LtR: case Op::LeR: case Op::GtR: case Op::GeR:
-    case Op::EqB: case Op::NeB:
+    case Op::EqB: case Op::NeB: case Op::CompareText:
     case Op::And: case Op::Or: case Op::Xor:
     case Op::AndBits: case Op::OrBits: case Op::XorBits:
     case Op::JumpIfFalse: case Op::JumpIfTrue:
@@ -91,9 +92,9 @@ private:
 
     void expression(const Expression& e) {
         std::visit(Overloaded{
-                       [&](const Literal& literal) { this->literal(literal, e.location); },
+                       [&](const Literal& literal) { this->literal(literal, e); },
                        [&](const Access& access) { load(access, e.location); },
-                       [&](const CallExpression& call) { this->call(call, e.location); },
+                       [&](const CallExpression& call) { this->call(call, e.location, e.stringTemp); },
                        [&](const UnaryExpression& unary) {
                            expression(*unary.operand);
                            if (unary.op == UnaryOperator::Not && e.type == DataType::Bool) {
@@ -113,7 +114,12 @@ private:
                    e.node);
     }
 
-    void literal(const Literal& literal, SourceLocation where) {
+    void literal(const Literal& literal, const Expression& e) {
+        const auto where = e.location;
+        if (isStringType(literal.type)) {
+            emit(Op::PushString, where, static_cast<std::uint32_t>(e.stringTemp));
+            return;
+        }
         std::visit(Overloaded{
                        [&](bool b) { emit(Op::PushInt, where, 0, 0, b ? 1 : 0); },
                        [&](std::int64_t i) { emit(Op::PushInt, where, 0, 0, i); },
@@ -202,8 +208,8 @@ private:
     // A function call: every argument onto the stack (converted to the type
     // it's passed as; arrays and structs as the offset of their place),
     // then one instruction that pops them all and pushes the result.
-    void call(const CallExpression& call, SourceLocation where) {
-        CallInfo info{&call, {}};
+    void call(const CallExpression& call, SourceLocation where, std::size_t resultTemp) {
+        CallInfo info{&call, {}, resultTemp};
         const Pou* function = call.builtin == BuiltinFunction::None ? &unitFunction(call) : nullptr;
         for (std::size_t i = 0; i < call.arguments.size(); ++i) {
             const auto& argument = call.arguments[i];
@@ -258,6 +264,10 @@ private:
         expression(*b.right);
         convertIfNeeded(b.right->type, type, where);
 
+        if (isStringType(type)) {
+            emit(Op::CompareText, where, 0, 0, static_cast<std::int64_t>(b.op));
+            return;
+        }
         const bool real = type == DataType::Real;
         switch (b.op) {
         case BinaryOperator::Equal: emit(type == DataType::Bool ? Op::EqB : real ? Op::EqR : Op::EqI, where); return;
@@ -317,6 +327,8 @@ private:
         case DataType::Real: emit(Op::StoreReal, where, leaf); break;
         case DataType::DInt:
         case DataType::Time: emit(Op::StoreInt32, where, leaf); break;
+        case DataType::String:
+        case DataType::WString: emit(Op::StoreString, where, leaf); break;
         default: emit(Op::StoreWrapped, where, leaf, 0, static_cast<std::int64_t>(type)); break;
         }
     }
@@ -326,6 +338,7 @@ private:
                       : type == DataType::Int                             ? Op::StoreMemberInt16
                       : type == DataType::Real                            ? Op::StoreMemberReal
                       : type == DataType::DInt || type == DataType::Time ? Op::StoreMemberInt32
+                      : isStringType(type)                                ? Op::StoreMemberString
                                                                           : Op::StoreMemberWrapped;
         emit(op, where, slotIndex(instanceSlot), leaf, static_cast<std::int64_t>(type));
     }
@@ -530,6 +543,10 @@ const char* opName(Op op) {
     case Op::StoreInt32: return "StoreInt32";
     case Op::StoreReal: return "StoreReal";
     case Op::StoreWrapped: return "StoreWrapped";
+    case Op::PushString: return "PushString";
+    case Op::StoreString: return "StoreString";
+    case Op::StoreMemberString: return "StoreMemberString";
+    case Op::CompareText: return "CompareText";
     case Op::StoreMemberWrapped: return "StoreMemberWrapped";
     case Op::WrapTo: return "WrapTo";
     case Op::AndBits: return "AndBits";
@@ -609,7 +626,7 @@ std::string disassemble(const Chunk& chunk) {
         case Op::PushReal: operands = fmt::format("{}", std::bit_cast<double>(in.imm)); break;
         case Op::LoadMemberBool: case Op::LoadMemberInt: case Op::LoadMemberReal:
         case Op::StoreMemberBool: case Op::StoreMemberInt16: case Op::StoreMemberInt32: case Op::StoreMemberReal:
-        case Op::ForTest: case Op::CopyPlace: case Op::LoadPart: case Op::StorePart:
+        case Op::ForTest: case Op::CopyPlace: case Op::LoadPart: case Op::StorePart: case Op::StoreMemberString:
             operands = fmt::format("{} {}", in.a, in.b);
             break;
         case Op::StoreMemberWrapped:
@@ -619,6 +636,7 @@ std::string disassemble(const Chunk& chunk) {
             operands = fmt::format("{} {}", in.a, dataTypeName(static_cast<DataType>(in.imm)));
             break;
         case Op::WrapTo: operands = dataTypeName(static_cast<DataType>(in.imm)); break;
+        case Op::PushString: case Op::StoreString:
         case Op::LoadBool: case Op::LoadInt: case Op::LoadReal: case Op::StoreBool: case Op::StoreInt16:
         case Op::StoreInt32: case Op::StoreReal: case Op::Index: case Op::LoadPlace: case Op::StorePlace: case Op::LoadTemp:
         case Op::StoreTemp: case Op::Jump: case Op::JumpIfFalse: case Op::JumpIfTrue: case Op::CheckStep:

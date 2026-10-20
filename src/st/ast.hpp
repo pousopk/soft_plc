@@ -309,6 +309,10 @@ struct Expression {
     std::variant<Literal, Access, CallExpression, UnaryExpression, BinaryExpression> node;
     SourceLocation location;
     DataType type = DataType::Unknown; // set by the analyzer: the type of the result
+    // Set by the analyzer for expressions that make a text (a literal, a
+    // call giving a STRING): the scratch buffer it's made in, an index into
+    // its POU's stringTemps.
+    std::size_t stringTemp = kNoSlot;
 };
 
 // ---------------------------------------------------------------- Statements
@@ -453,6 +457,14 @@ struct Pou {
     SourceLocation location;
     bool builtin = false;      // a standard block like TON, implemented in C++ (its body is empty)
     std::size_t leafCount = 0; // set by the analyzer: the leaves of all its variables
+    // Set by the analyzer: one scratch buffer for each expression in the POU
+    // that makes a text (see Expression::stringTemp). A literal's holds its
+    // text from the start; a call's holds its latest result.
+    struct StringTemp {
+        std::size_t capacity = 0;
+        std::u16string text;
+    };
+    std::vector<StringTemp> stringTemps;
     // FUNCTION only: the type it returns, and the variable that holds the
     // result (named like the function, added by the parser as the last variable).
     TypeSpec returnType;

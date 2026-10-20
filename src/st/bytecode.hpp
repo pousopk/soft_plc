@@ -27,16 +27,19 @@ enum class Op : std::uint8_t {
     // Constants
     PushInt,  // push imm (also BOOL 0/1 and TIME in ms)
     PushReal, // push imm, holding a double's bits
+    PushString, // push the handle of the running instance's text scratch buffer a (a literal's text is there)
 
     // Values of the running instance (a = leaf)
     LoadBool, LoadInt, LoadReal,
     StoreBool, StoreInt16, StoreInt32, StoreReal, // pop, convert to the type, store
     StoreWrapped, // pop, wrap to the type in imm (a DataType: SINT, UINT, WORD, LINT, ...), store
+    StoreString,  // pop a text's handle, copy the text into the STRING in leaf a (cut to its length)
 
     // Inputs and outputs of a child instance (a = instance slot, b = leaf in the child)
     LoadMemberBool, LoadMemberInt, LoadMemberReal,
     StoreMemberBool, StoreMemberInt16, StoreMemberInt32, StoreMemberReal,
     StoreMemberWrapped, // like StoreWrapped
+    StoreMemberString,  // like StoreString
 
     // Scratch slots for the compiler's own use (CASE selector, FOR bounds), a = index
     LoadTemp, StoreTemp,
@@ -66,6 +69,7 @@ enum class Op : std::uint8_t {
     EqI, NeI, LtI, LeI, GtI, GeI,
     EqR, NeR, LtR, LeR, GtR, GeR,
     EqB, NeB,
+    CompareText, // pop two texts' handles, push the comparison imm (a BinaryOperator) of their texts
 
     // Logic
     And, Or, Xor, Not,
@@ -112,6 +116,7 @@ struct CallInfo {
     static constexpr std::uint32_t kNoPlace = 0xFFFFFFFF;
     const CallExpression* call = nullptr;
     std::vector<std::uint32_t> sourcePlaces;
+    std::size_t resultTemp = kNoSlot; // a FUNCTION giving a text: the scratch buffer its result is copied to
 };
 
 // The compiled code of one POU.

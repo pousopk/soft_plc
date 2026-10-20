@@ -3,6 +3,7 @@
 #include "st/compiler.hpp"
 #include "st/functions.hpp"
 #include "st/runtime_values.hpp"
+#include "st/string_text.hpp"
 #include "util/overloaded.hpp"
 #include "util/text.hpp"
 #include <array>
@@ -26,6 +27,9 @@ struct Instance {
     std::vector<std::unique_ptr<Instance>> children;
     // Set only for standard blocks like TON: their behaviour in C++.
     std::unique_ptr<NativeBlock> native;
+    // The handle of the first of this instance's scratch buffers for texts
+    // (see Pou::stringTemps); the others follow it.
+    std::int64_t tempBase = 0;
 };
 
 namespace {
@@ -138,9 +142,24 @@ Interpreter::Interpreter(CompilationUnit unit, std::uint64_t loopLimit, Engine e
         FunctionFrame frame;
         frame.instance = createInstance(function);
         frame.initial = frame.instance->values;
+        // Its strings' initial texts, to start every call from.
+        for (const auto& variable : function.variables) {
+            if (variable.typeInfo == nullptr || variable.address) {
+                continue;
+            }
+            for (std::size_t k = 0; k < variable.typeInfo->leafCount(); ++k) {
+                if (isStringType(variable.typeInfo->leaves[k].type)) {
+                    const auto live = std::get<std::int64_t>(frame.instance->values[variable.leaf + k]);
+                    const auto initial = pool_.add(pool_.capacity(live));
+                    pool_.assign(initial, pool_.view(live));
+                    frame.strings.emplace_back(live, initial);
+                }
+            }
+        }
         functions_.push_back(std::move(frame));
     }
     root_ = createInstance(unit_->program);
+    scratch_ = pool_.add(kMaxWStringLength);
 }
 
 const Chunk* Interpreter::bytecode(const Pou& pou) const {
@@ -159,12 +178,22 @@ std::unique_ptr<Instance> Interpreter::createInstance(const Pou& pou) {
     instance->type = &pou;
     instance->children.resize(pou.variables.size());
     instance->values.resize(pou.leafCount);
+    instance->tempBase = static_cast<std::int64_t>(pool_.size());
+    for (const auto& temp : pou.stringTemps) {
+        pool_.assign(pool_.add(temp.capacity), temp.text); // a literal's text stays there
+    }
     for (std::size_t slot = 0; slot < pou.variables.size(); ++slot) {
         const auto& variable = pou.variables[slot];
         if (variable.type == DataType::FunctionBlock) {
             instance->children[slot] = createInstance(*variable.functionBlock);
         } else if (!variable.address) {
             initialize(*instance, *variable.typeInfo, variable.leaf, variable.initialValue.get());
+        } else {
+            for (const auto& leaf : variable.typeInfo->leaves) {
+                if (isStringType(leaf.type)) {
+                    locatedStrings_[{&variable, leaf.bitOffset}] = LocatedString{pool_.add(leaf.stringLength), leaf.type};
+                }
+            }
         }
     }
     if (pou.builtin) {
@@ -181,6 +210,15 @@ void Interpreter::initialize(Instance& instance, const Type& type, std::size_t l
     switch (type.kind) {
     case Type::Kind::Elementary: {
         const auto* expression = initializer != nullptr ? std::get_if<ExpressionPtr>(&initializer->node) : nullptr;
+        if (isStringType(type.elementary)) {
+            // Its own buffer for good; an initial value is a literal (a constant).
+            const auto handle = pool_.add(type.stringLength);
+            instance.values[leaf] = handle;
+            if (expression != nullptr) {
+                pool_.assign(handle, std::get<Literal>((*expression)->node).text);
+            }
+            return;
+        }
         instance.values[leaf] = expression != nullptr ? convert(evaluate(**expression, instance), type.elementary)
                                                       : defaultValue(type.elementary);
         return;
@@ -220,6 +258,10 @@ void Interpreter::runCycle(ProcessImage& image, TimePoint now) {
     ImageBinding binding(image_, image);
     now_ = now;
     loopIterations_ = 0;
+    if (!headersWritten_) {
+        writeStringHeaders();
+        headersWritten_ = true;
+    }
     run(*root_);
 }
 
@@ -430,6 +472,52 @@ std::optional<Value> Interpreter::valueOf(std::string_view path, const ProcessIm
     return loadLeaf(Place{found->instance, found->variable, found->leaf, found->bit}, found->type, &image);
 }
 
+std::optional<std::u16string> Interpreter::textOf(std::string_view path, const ProcessImage& image) const {
+    const auto found = resolvePath(*root_, path);
+    if (!found || (!isStringType(found->type) && !isCharType(found->type))) {
+        return std::nullopt;
+    }
+    const auto value = toInteger(loadLeaf(Place{found->instance, found->variable, found->leaf, found->bit}, found->type, &image));
+    if (isCharType(found->type)) {
+        return std::u16string(1, static_cast<char16_t>(value));
+    }
+    return std::u16string(pool_.view(value));
+}
+
+bool Interpreter::setText(std::string_view path, std::u16string_view text, ProcessImage& image) {
+    const auto found = resolvePath(*root_, path);
+    if (!found || (!isStringType(found->type) && !isCharType(found->type))) {
+        return false;
+    }
+    ImageBinding binding(image_, image);
+    const Place where{found->instance, found->variable, found->leaf, found->bit};
+    if (isCharType(found->type)) {
+        storeLeaf(where, found->type, Value{std::int64_t{text.empty() ? char16_t{0} : text[0]}});
+    } else {
+        pool_.assign(scratch_, text);
+        storeLeaf(where, found->type, Value{scratch_});
+    }
+    return true;
+}
+
+std::optional<std::string> Interpreter::formatValueOf(std::string_view path, const ProcessImage& image) const {
+    const auto found = resolvePath(*root_, path);
+    if (!found) {
+        return std::nullopt;
+    }
+    const auto value = loadLeaf(Place{found->instance, found->variable, found->leaf, found->bit}, found->type, &image);
+    const auto kind = found->type == DataType::String || found->type == DataType::Char ? TextKind::String
+                                                                                       : TextKind::WString;
+    if (isStringType(found->type)) {
+        return encodeLiteral(pool_.view(toInteger(value)), kind);
+    }
+    if (isCharType(found->type)) {
+        const auto c = static_cast<char16_t>(toInteger(value));
+        return encodeLiteral(std::u16string_view(&c, 1), kind);
+    }
+    return formatValue(value, found->type);
+}
+
 bool Interpreter::setValue(std::string_view path, const Value& value, ProcessImage& image) {
     const auto found = resolvePath(*root_, path);
     if (!found) {
@@ -468,6 +556,9 @@ Value Interpreter::loadLeaf(const Place& place, DataType type, const ProcessImag
     }
     // AT variables: the analyzer made sure the address fits the type, and
     // the S7 layout puts every leaf at an address of the right size.
+    if (isStringType(type)) {
+        return readLocatedString(place, type, *image);
+    }
     const auto address = leafAddress(variable, place.bit, type);
     const auto raw = image->read(address);
     switch (type) {
@@ -492,6 +583,16 @@ Value Interpreter::loadLeaf(const Place& place, DataType type, const ProcessImag
 
 void Interpreter::storeLeaf(const Place& place, DataType type, const Value& value) {
     const auto& variable = *place.variable;
+    if (isStringType(type)) {
+        // Texts are copied, never shared: the leaf keeps its own buffer.
+        const auto text = pool_.view(toInteger(value));
+        if (variable.address) {
+            writeLocatedString(place, type, text);
+        } else {
+            pool_.assign(std::get<std::int64_t>(place.instance->values[variable.leaf + place.leaf]), text);
+        }
+        return;
+    }
     const auto converted = convert(value, type);
     if (!variable.address) {
         place.instance->values[variable.leaf + place.leaf] = converted;
@@ -527,6 +628,60 @@ void Interpreter::storePart(const Access& access, const Value& value, Instance& 
     storeLeaf(where, part.whole, insertPart(whole, part, convert(value, access.type->elementary)));
 }
 
+std::int64_t Interpreter::tempHandle(const Instance& self, const Expression& expression) {
+    return self.tempBase + static_cast<std::int64_t>(expression.stringTemp);
+}
+
+namespace {
+
+// Character `index` of a located string, counting the header's two first
+// (Siemens: STRING[n] is bytes max, length, then n bytes; WSTRING[n] the
+// same in words).
+Address unitAddress(const VariableDeclaration& variable, std::size_t bit, DataType type, std::size_t index) {
+    return type == DataType::String ? leafAddress(variable, bit + index * 8, DataType::Byte)
+                                    : leafAddress(variable, bit + index * 16, DataType::Word);
+}
+
+} // namespace
+
+// Reads a located string into its buffer. A current length longer than the
+// string can be (written by an S7 client, say) is cut to the declared length.
+std::int64_t Interpreter::readLocatedString(const Place& place, DataType type, const ProcessImage& image) const {
+    const auto& variable = *place.variable;
+    const auto handle = locatedStrings_.at({&variable, place.bit}).handle;
+    const auto length = std::min<std::size_t>(image.read(unitAddress(variable, place.bit, type, 1)), pool_.capacity(handle));
+    pool_.setLength(handle, length);
+    for (std::size_t k = 0; k < length; ++k) {
+        pool_.setChar(handle, k, static_cast<char16_t>(image.read(unitAddress(variable, place.bit, type, 2 + k))));
+    }
+    return handle;
+}
+
+void Interpreter::writeLocatedString(const Place& place, DataType type, std::u16string_view text) {
+    const auto& variable = *place.variable;
+    const auto capacity = pool_.capacity(locatedStrings_.at({&variable, place.bit}).handle);
+    const auto length = std::min(text.size(), capacity);
+    image_->write(unitAddress(variable, place.bit, type, 0), static_cast<std::uint32_t>(capacity));
+    image_->write(unitAddress(variable, place.bit, type, 1), static_cast<std::uint32_t>(length));
+    for (std::size_t k = 0; k < length; ++k) {
+        image_->write(unitAddress(variable, place.bit, type, 2 + k), text[k]);
+    }
+}
+
+// Located strings get their maximum length in the header, so S7 clients
+// and HMIs know how much room there is. The current length is left alone:
+// reading cuts it if it's too long.
+void Interpreter::writeStringHeaders() {
+    for (const auto& [key, located] : locatedStrings_) {
+        const auto& [variable, bit] = key;
+        const auto first = unitAddress(*variable, bit, located.type, 0);
+        const auto capacity = static_cast<std::uint32_t>(pool_.capacity(located.handle));
+        if (image_->read(first) != capacity) {
+            image_->write(first, capacity);
+        }
+    }
+}
+
 // A whole array or struct, leaf by leaf (the analyzer checked both sides
 // have the same type).
 void Interpreter::copyAggregate(const Place& from, const Place& to, const Type& type) {
@@ -557,7 +712,7 @@ Interpreter::Flow Interpreter::execute(const Statement& statement, Instance& sel
                 if (s.target.type->isAggregate()) {
                     const auto from = place(std::get<Access>(s.value->node), self);
                     copyAggregate(from, place(s.target, self), *s.target.type);
-                } else if (s.target.directLeaf != kNoSlot) {
+                } else if (s.target.directLeaf != kNoSlot && !isStringType(s.target.type->elementary)) {
                     self.values[s.target.directLeaf] = convert(evaluate(*s.value, self), s.target.type->elementary);
                 } else if (s.target.part) {
                     storePart(s.target, evaluate(*s.value, self), self);
@@ -721,6 +876,7 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
         switch (in.op) {
         case Op::PushInt: (sp++)->i = in.imm; break;
         case Op::PushReal: (sp++)->r = std::bit_cast<double>(in.imm); break;
+        case Op::PushString: (sp++)->i = self.tempBase + static_cast<std::int64_t>(in.a); break;
 
         case Op::LoadBool: (sp++)->i = std::get<bool>(values[in.a]) ? 1 : 0; break;
         case Op::LoadInt: (sp++)->i = std::get<std::int64_t>(values[in.a]); break;
@@ -730,6 +886,7 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
         case Op::StoreInt32: values[in.a] = std::int64_t{static_cast<std::int32_t>((--sp)->i)}; break;
         case Op::StoreReal: values[in.a] = roundToReal((--sp)->r); break;
         case Op::StoreWrapped: values[in.a] = wrapInteger((--sp)->i, static_cast<DataType>(in.imm)); break;
+        case Op::StoreString: pool_.assign(std::get<std::int64_t>(values[in.a]), pool_.view((--sp)->i)); break;
 
         case Op::LoadMemberBool: (sp++)->i = std::get<bool>(self.children[in.a]->values[in.b]) ? 1 : 0; break;
         case Op::LoadMemberInt: (sp++)->i = std::get<std::int64_t>(self.children[in.a]->values[in.b]); break;
@@ -742,6 +899,9 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
             self.children[in.a]->values[in.b] = std::int64_t{static_cast<std::int32_t>((--sp)->i)};
             break;
         case Op::StoreMemberReal: self.children[in.a]->values[in.b] = roundToReal((--sp)->r); break;
+        case Op::StoreMemberString:
+            pool_.assign(std::get<std::int64_t>(self.children[in.a]->values[in.b]), pool_.view((--sp)->i));
+            break;
         case Op::StoreMemberWrapped:
             self.children[in.a]->values[in.b] = wrapInteger((--sp)->i, static_cast<DataType>(in.imm));
             break;
@@ -834,6 +994,10 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
         case Op::GeR: --sp; sp[-1].i = sp[-1].r >= sp->r; break;
         case Op::EqB: --sp; sp[-1].i = (sp[-1].i != 0) == (sp->i != 0); break;
         case Op::NeB: --sp; sp[-1].i = (sp[-1].i != 0) != (sp->i != 0); break;
+        case Op::CompareText:
+            --sp;
+            sp[-1].i = compare(static_cast<BinaryOperator>(in.imm), compareText(pool_.view(sp[-1].i), pool_.view(sp->i)), 0);
+            break;
 
         case Op::And: --sp; sp[-1].i = sp[-1].i != 0 && sp->i != 0; break;
         case Op::Or: --sp; sp[-1].i = sp[-1].i != 0 || sp->i != 0; break;
@@ -897,7 +1061,15 @@ void Interpreter::runBytecode(const Chunk& chunk, Instance& self) {
                     arguments[i].value = fromSlot(sp[i], input.type);
                 }
             }
-            *sp++ = toSlot(invokeFunction(call.functionIndex, std::span(arguments.data(), count)));
+            const auto result = invokeFunction(call.functionIndex, std::span(arguments.data(), count));
+            if (info.resultTemp != kNoSlot) {
+                // A text: the function's result is overwritten by its next call, so keep a copy.
+                const auto temp = self.tempBase + static_cast<std::int64_t>(info.resultTemp);
+                pool_.assign(temp, pool_.view(std::get<std::int64_t>(result)));
+                (sp++)->i = temp;
+            } else {
+                *sp++ = toSlot(result);
+            }
             break;
         }
         case Op::Return: return;
@@ -920,7 +1092,12 @@ Interpreter::Place Interpreter::vmPlace(const PlaceInfo& info, Instance& self, s
 
 Value Interpreter::evaluate(const Expression& expression, Instance& self) {
     return std::visit(Overloaded{
-                          [](const Literal& literal) { return literal.value; },
+                          [&](const Literal& literal) -> Value {
+                              if (isStringType(literal.type)) {
+                                  return tempHandle(self, expression); // holds the literal's text from the start
+                              }
+                              return literal.value;
+                          },
                           [&](const Access& access) {
                               if (access.directLeaf != kNoSlot) {
                                   const Instance& owner =
@@ -932,9 +1109,18 @@ Value Interpreter::evaluate(const Expression& expression, Instance& self) {
                               }
                               return loadLeaf(place(access, self), access.type->elementary, image_);
                           },
-                          [&](const CallExpression& call) {
-                              return call.builtin != BuiltinFunction::None ? callBuiltin(call, self, expression.location)
-                                                                           : callFunction(call, self);
+                          [&](const CallExpression& call) -> Value {
+                              if (call.builtin != BuiltinFunction::None) {
+                                  return callBuiltin(call, self, expression.location);
+                              }
+                              const auto result = callFunction(call, self);
+                              if (isStringType(expression.type)) {
+                                  // The function's result is overwritten by its next call: keep a copy.
+                                  const auto temp = tempHandle(self, expression);
+                                  pool_.assign(temp, pool_.view(toInteger(result)));
+                                  return temp;
+                              }
+                              return result;
                           },
                           [&](const UnaryExpression& unary) -> Value {
                               const auto operand = evaluate(*unary.operand, self);
@@ -1000,6 +1186,9 @@ Value Interpreter::invokeFunction(std::size_t index, std::span<const Argument> a
     auto& frame = functions_[index];
     Instance& instance = *frame.instance;
     instance.values = frame.initial; // same size: copies values, allocates nothing
+    for (const auto& [live, initial] : frame.strings) {
+        pool_.assign(live, pool_.view(initial));
+    }
     for (const auto& argument : arguments) {
         const auto input = wholeVariable(instance, argument.slot);
         if (argument.aggregate != nullptr) {
@@ -1020,6 +1209,7 @@ Value Interpreter::evaluateBinary(const BinaryExpression& binary, const Expressi
 
     if (isComparison(binary.op)) {
         if (type == DataType::Bool) return compare(binary.op, std::get<bool>(left), std::get<bool>(right));
+        if (isStringType(type)) return compare(binary.op, compareText(pool_.view(toInteger(left)), pool_.view(toInteger(right))), 0);
         if (type == DataType::Real) return compare(binary.op, toReal(left), toReal(right));
         return compare(binary.op, toInteger(left), toInteger(right));
     }
